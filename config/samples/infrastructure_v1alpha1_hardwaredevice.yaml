@@ -1,0 +1,24 @@
+# Example HardwareDevice (design doc §4.3).
+#
+# HardwareDevice objects are created and owned by the HardwareDiscovery
+# singleton controller: the service derives the object name from
+# spec.identity.id, sets the singleton ownerReference and the
+# hardwarediscovery.platform.opendatahub.io/ device-class and node labels.
+# This sample illustrates the spec shape only; applying it by hand does not
+# reproduce controller ownership.
+apiVersion: infrastructure.platform.opendatahub.io/v1alpha1
+kind: HardwareDevice
+metadata:
+  name: gpu-11111111-2222-3333-4444-555555555555
+spec:
+  class: accelerator
+  identity:
+    id: GPU-11111111-2222-3333-4444-555555555555
+  host:
+    name: gpu-node-a
+    uid: 11111111-1111-1111-1111-111111111111
+  source:
+    dra:
+      driver: gpu.nvidia.com
+      pool: gpu-node-a
+      device: gpu-11111111-2222-3333-4444-555555555555

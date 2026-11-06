@@ -1,0 +1,27 @@
+# Example HardwareDiscovery singleton (design doc §5.3).
+#
+# The instance name must be exactly "cluster"; the root-schema CEL rule
+# rejects any other name. This example matches the classic simulator profile:
+# the simulator source is enabled and points at the fake-gpu-operator
+# namespace. For the DRA profile, set spec.sources.simulator.enabled to
+# false (or omit the simulator block) and leave the DRA source enabled.
+apiVersion: infrastructure.platform.opendatahub.io/v1alpha1
+kind: HardwareDiscovery
+metadata:
+  name: cluster
+spec:
+  class: accelerator
+  nodeSelector:
+    matchLabels:
+      run.ai/simulated-gpu-node-pool: default
+  maxStale: 10m
+  rescanPeriod: 5m
+  nodeGracePeriod: 15m
+  sources:
+    dra:
+      enabled: true
+      driverAllowList:
+      - gpu.nvidia.com
+    simulator:
+      enabled: true
+      namespace: gpu-operator

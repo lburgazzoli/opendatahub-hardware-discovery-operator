@@ -1,0 +1,55 @@
+# Build artifacts
+bin/
+vendor/
+*.test
+cover.out
+covmeta*
+covcounters*
+dist/
+Dockerfile.cross
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Kubernetes Generated files - skip generated files, except for vendored files
+!vendor/**/zz_generated.*
+
+# Kubeconfig (local dev)
+.kube/
+*.kubeconfig
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+
+# OS
+.DS_Store
+*~
+*.swp
+*.swo
+
+# Generated (controller-gen)
+config/crd/bases/
+config/rbac/role.yaml
+
+# Generated (kustomize edit)
+config/manager/kustomization.yaml
+
+# Generated (helm chart)
+config/chart/
+
+# OpenCode
+.opencode/
+
+# Devcontainer
+.devcontainer/
+
+# Custom golangci-lint plugin config
+.custom-gcl.yml
+
+# Makefile overrides
+local.mk
+*.mktmp.*
+.context/
