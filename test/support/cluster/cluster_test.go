@@ -41,7 +41,7 @@ import (
 )
 
 // fakeProvider records every call and never touches a container runtime:
-// ordinary unit tests must not create clusters (task 010 acceptance).
+// ordinary unit tests must not create clusters.
 type fakeProvider struct {
 	mu sync.Mutex
 

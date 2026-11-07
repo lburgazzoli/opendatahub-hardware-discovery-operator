@@ -20,9 +20,8 @@ limitations under the License.
 // Everything in this package is test-only support code: it mutates cluster
 // state (node labels, simulator releases, topology inputs) that production
 // discovery code must only ever read. The frozen install profiles, values
-// and node labels come from the approved task-001 contract
-// (docs/design/poc-contract.md §9.1, testing.md "Approved simulator/test
-// profile") and must not be changed without a re-approved contract change.
+// and node labels are the approved simulator/test profile and must not be
+// changed without a re-approved contract change.
 package simulator
 
 // Frozen pins and identifiers (approved simulator/test profile).
@@ -38,7 +37,7 @@ const (
 	ChartRepository = "oci://ghcr.io/run-ai/fake-gpu-operator/fake-gpu-operator"
 
 	// ChartDigest pins the exact reviewed chart artifact (v0.2.1,
-	// content-identical to the inspected tag; task-001 evidence).
+	// content-identical to the inspected tag).
 	ChartDigest = "sha256:e73fc8c0d0a375dfc452eae63b1446cd82e5a302634905acdbd31cbc5a036c11"
 
 	// TopologyCMName is FGO's TOPOLOGY_CM_NAME: per-node ConfigMaps are
@@ -104,8 +103,8 @@ func componentValues(enabled bool) map[string]any {
 	return map[string]any{valuesEnabledKey: enabled}
 }
 
-// Values returns the exact frozen Helm values for the profile (design doc
-// §9.1): the real NVIDIA stack, KWOK, compute-domain, telemetry and MIG
+// Values returns the exact frozen Helm values for the profile: the real
+// NVIDIA stack, KWOK, compute-domain, telemetry and MIG
 // machinery stay off; only the fake components the PoC needs are enabled.
 func (p Profile) Values() map[string]any {
 	values := map[string]any{

@@ -1,4 +1,4 @@
-# Example HardwareDiscovery singleton (design doc §5.3).
+# Example HardwareDiscovery singleton.
 #
 # The instance name must be exactly "cluster"; the root-schema CEL rule
 # rejects any other name. Both sources are enabled by default; a nil or

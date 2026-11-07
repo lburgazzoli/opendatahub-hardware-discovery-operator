@@ -155,7 +155,7 @@ func sourceByID(sources discovery.Sources, id string) discovery.Source {
 }
 
 // sourceRef renders the provenance of one identity:
-// "<source-kind>/<locator ref>" (design doc §4.3), for example
+// "<source-kind>/<locator ref>", for example
 // dra/gpu.nvidia.com/<pool> or classic/<node>. It is replaced, never
 // merged, on an observed source change.
 func sourceRef(kind string, locator discovery.Locator) string {

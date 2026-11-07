@@ -37,7 +37,7 @@ const (
 	ConditionTypeDegraded = "Degraded"
 )
 
-// Condition reasons (design doc §5.2). They describe the collector and
+// Condition reasons. They describe the collector and
 // its observations, never hardware health or free allocation capacity.
 const (
 	reasonReconciled           = "Reconciled"

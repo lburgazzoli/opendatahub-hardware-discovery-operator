@@ -25,7 +25,7 @@ import (
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 )
 
-// Service-written label keys (design doc §4.4). The prefix belongs to this
+// Service-written label keys. The prefix belongs to this
 // service only; every label below it is written by the singleton
 // controller and never by a consumer.
 const (
@@ -42,7 +42,7 @@ const (
 	LabelNode = LabelPrefix + "/node"
 )
 
-// Name and label derivation limits (design doc §4.4).
+// Name and label derivation limits.
 const (
 	// maxSubdomainLength is the DNS-1123 subdomain length limit for
 	// derived object names.
@@ -67,8 +67,8 @@ const (
 // IdentityKey is the deterministic matching key of one device incarnation:
 // the device id — vendor UUID or node-scoped synthetic id — paired with
 // the hosting Node UID. The host UID cannot be dropped from matching: the
-// same id observed on a new Node UID is a new incarnation (design doc
-// §10), never an in-place transfer.
+// same id observed on a new Node UID is a new incarnation, never an
+// in-place transfer.
 type IdentityKey struct {
 	// ID is the device id (vendor UUID or node-scoped synthetic id).
 	ID string
@@ -85,13 +85,13 @@ func (i Identity) Key() IdentityKey {
 // incarnation identified by key on plane: it must name the same proven
 // identity — the same device id and the same host UID — and the same
 // allocation plane. Sources may augment the same proven identity only and
-// never combine allocation planes (design doc §10).
+// never combine allocation planes.
 func (i Identity) Augments(key IdentityKey, plane Plane) bool {
 	return i.Key() == key && i.Plane == plane
 }
 
 // DeviceName derives the deterministic HardwareDevice object name for the
-// device identity id (design doc §4.4): the id lowercased, invalid
+// device identity id: the id lowercased, invalid
 // characters folded into collapsed separators, leading and trailing
 // separators trimmed. When the slug is not a legal DNS-1123 subdomain —
 // for example because it exceeds 253 characters or sanitizes to nothing —
@@ -110,7 +110,7 @@ func DeviceName(id string) string {
 // id given the object names already taken (name → identity id of the
 // holder). It returns DeviceName(id) unless that name is held by a
 // different raw identity, in which case the deterministic sha256
-// disambiguation suffix is appended (design doc §4.4): two raw identities
+// disambiguation suffix is appended: two raw identities
 // that sanitize to the same slug never share an object.
 //
 // Callers should match existing devices by Identity.Key first and derive
@@ -149,7 +149,7 @@ func AmbiguousIDs(ids []Identity) map[string]struct{} {
 }
 
 // DeviceLabels returns the deterministic, service-written label set of a
-// HardwareDevice of the given class on the given node (design doc §4.4).
+// HardwareDevice of the given class on the given node.
 // The returned map is freshly allocated; callers may keep or modify it
 // without affecting later calls. class is an enum value, legal as a label
 // value by construction.
@@ -161,7 +161,7 @@ func DeviceLabels(class, node string) map[string]string {
 }
 
 // NodeLabelValue returns the deterministic value of the service-written
-// node label for a node name (design doc §4.4): the full node name when it
+// node label for a node name: the full node name when it
 // is a legal label value, otherwise "<first-52-chars>-<sha256[:10]>" (63
 // characters total). The truncation is deterministic and unit-tested; the
 // label is an index, never an identity source, and the full node name
@@ -211,8 +211,8 @@ func slugify(s string) string {
 }
 
 // withHashSuffix appends "-<sha256(id) hex prefix>" to name, truncating
-// name as needed so the result stays a legal DNS-1123 subdomain (design
-// doc §4.4). A name that sanitizes to nothing becomes the bare hash.
+// name as needed so the result stays a legal DNS-1123 subdomain. A name
+// that sanitizes to nothing becomes the bare hash.
 func withHashSuffix(name, id string) string {
 	hash := hashHex(id, nameHashLength)
 	name = name[:min(len(name), maxSubdomainLength-nameHashSuffixLength)]

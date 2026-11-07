@@ -25,8 +25,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
-// GFD-style node label keys read by the classic source (design doc §9,
-// amendment 3). These are the labels a real classic (ClusterPolicy/GFD)
+// GFD-style node label keys read by the classic source. These are the
+// labels a real classic (ClusterPolicy/GFD)
 // cluster publishes; the source reads exactly what the fleet provides.
 const (
 	// LabelGPUProduct is the node's GPU model label.
@@ -69,8 +69,8 @@ func extendedResourceEvidence(node *corev1.Node, resourceName string) bool {
 	return inAllocatable || inCapacity
 }
 
-// acceleratorFacts reads the node's homogeneous label facts (design doc
-// §9): model from gpu.product, memory from gpu.memory MiB → bytes
+// acceleratorFacts reads the node's homogeneous label facts: model from
+// gpu.product, memory from gpu.memory MiB → bytes
 // (BinarySI). GFD does not publish vendor, so it is omitted. Absent
 // labels yield absent facts; a present but malformed memory label is an
 // error — malformed input is unknown, never a silently zeroed fact.

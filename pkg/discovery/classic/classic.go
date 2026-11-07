@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package classic implements the classic labels discovery source (design
-// doc §9, amendment 3): a production source that discovers accelerators
+// Package classic implements the classic labels discovery source: a
+// production source that discovers accelerators
 // on pre-DRA nodes from exactly what a real classic (ClusterPolicy/GFD)
 // cluster publishes — GFD-style node labels (gpu.product, gpu.memory MiB,
 // gpu.count) plus classic extended-resource evidence (the configured

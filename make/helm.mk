@@ -1,7 +1,6 @@
-# Helm packaging for the hardware discovery service (task 009).
+# Helm packaging for the hardware discovery service.
 #
-# Pipeline (docs/development.md, "Helm contract shared by runtime and
-# packaging"):
+# Pipeline (docs/development.md, Packaging):
 #   source config -> make manifests generate build
 #                 -> make helm-chart [IMG=...]
 #                 -> helm-review-chart / helm-lint / helm-render /

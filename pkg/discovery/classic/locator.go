@@ -26,7 +26,7 @@ import (
 )
 
 // Locator locates a device in the classic labels input of its hosting
-// node (design doc §4.1/§9, amendment 3): the Node whose GFD-style labels
+// node: the Node whose GFD-style labels
 // describe the device, plus the device's index within the node's
 // published gpu.count. Devices located this way carry a synthetic
 // node-scoped identity (identity.kind nodeIndex).
@@ -58,7 +58,7 @@ func (l Locator) Equal(other discovery.Locator) bool {
 // Ref renders the locator's provenance suffix: the node name.
 func (l Locator) Ref() string { return l.Node }
 
-// Identity id derivation limits (design doc §4.1): spec.identity.id is
+// Identity id derivation limits: spec.identity.id is
 // capped at 63 characters.
 const (
 	// MaxIDLength is the maximum length of a derived identity id.
@@ -70,7 +70,7 @@ const (
 )
 
 // DeviceID derives the synthetic node-scoped identity id of a device:
-// "<node>-gpu-<index>" (design doc §4.1/§9, amendment 3). The id is
+// "<node>-gpu-<index>". The id is
 // deterministic for the node incarnation, and when the node name is too
 // long it is hash-truncated to stay within MaxIDLength: the kept node
 // prefix is followed by "-gpu-<index>-<sha256[:8]>" of the full

@@ -10,8 +10,8 @@ nameOverride: ""
 ## String to fully override chart.fullname template.
 ##
 ## Fixed on purpose: the chart renders the same object names as the
-## Kustomize installer (dist/install.yaml) and the runtime interface
-## table in docs/development.md, independent of the release name.
+## Kustomize installer (dist/install.yaml), independent of the release
+## name.
 ## The service is a cluster singleton (cluster-scoped CRDs, singleton
 ## instance "cluster"): one release per cluster is the supported model.
 ##

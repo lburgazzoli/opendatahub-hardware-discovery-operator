@@ -83,7 +83,7 @@ func recordObservation(
 }
 
 // classifyObserveError maps an observation failure to the condition
-// reason (design doc §6.5). Classification uses errors.Is and the API
+// reason. Classification uses errors.Is and the API
 // status helpers, never message text.
 func classifyObserveError(err error) string {
 	switch {

@@ -35,7 +35,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// DefaultCommand is the approved Helm CLI pin (task-001 contract §2.2):
+// DefaultCommand is the approved Helm CLI pin:
 // the CLI is executed through `go run` at the exact published version,
 // never through an unpinned local binary.
 var DefaultCommand = []string{"go", "run", "helm.sh/helm/v4/cmd/helm@v4.3.1"}
@@ -195,7 +195,7 @@ func (r *Runner) ChartAvailable(ctx context.Context, chart string) error {
 }
 
 // controllerImageValueKey is the chart value key carrying the service
-// controller image (approved packaging contract, design doc §11:
+// controller image (approved packaging contract:
 // controllerImage.{repository,tag} kept as distinct whole values).
 const controllerImageValueKey = "controllerImage"
 

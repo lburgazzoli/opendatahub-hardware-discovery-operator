@@ -21,8 +21,8 @@ import (
 	"fmt"
 )
 
-// Locator is the pluggable, source-owned locator stored in spec.source
-// (design doc §7, amendments 2+3). Each source package implements it for
+// Locator is the pluggable, source-owned locator stored in spec.source.
+// Each source package implements it for
 // its own locator shape; the core never enumerates source kinds. The
 // implementation's Kind must match the spec.source.kind arm that carries
 // the locator, and source implementations are expected to map their
@@ -36,7 +36,7 @@ type Locator interface {
 	// Equal reports deep equality with another locator. It never mutates
 	// the caller's values; locators of different kinds are never equal.
 	Equal(Locator) bool
-	// Ref renders the locator's provenance suffix (design doc §4.2), for
+	// Ref renders the locator's provenance suffix, for
 	// example "gpu.nvidia.com/<pool>" or "<node>".
 	Ref() string
 }
@@ -52,8 +52,8 @@ var (
 	ErrIncompleteLocator = errors.New("discovery: source locator is missing a required field")
 )
 
-// SourceRef builds the provenance reference for a source and locator
-// (design doc §4.2/§7): "<source-id>/<locator ref>" — for example
+// SourceRef builds the provenance reference for a source and locator:
+// "<source-id>/<locator ref>" — for example
 // "dra/gpu.nvidia.com/gpu-node-a" or "classic/gpu-node-a". The reference is
 // replaced, never merged, on an observed source change.
 func SourceRef(sourceID string, l Locator) (string, error) {

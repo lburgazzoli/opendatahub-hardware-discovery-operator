@@ -1,156 +1,90 @@
-# Development — runtime interface
+# Development
 
-This document records the delivered runtime interface of the hardware
-discovery service (task 008). Identifiers are derived from the actual
-manifests and runtime in this repository; packaging work (task 009)
-consumes — never redefines — them.
+Durable contributor rules. Mechanics, pins and defaults live in the code:
+`go.mod`, the `Makefile` and its `make/` fragments, and `hack/scripts/`
+are the source of truth — never copy their tables here. Run `make help`
+for the full target list.
 
-## Runtime interface table
-
-| Interface | Value | Source |
-|---|---|---|
-| Deployment | `opendatahub-hardware-discovery-operator-controller-manager` (namePrefix applied to `controller-manager`) | `config/manager/manager.yaml` via `config/default` |
-| Container | `manager` | `config/manager/manager.yaml` |
-| Container command | `[/manager, operator]` | `config/manager/manager.yaml`; root command in `cmd/main.go`, subcommand in `cmd/operator/` |
-| Container args | `--leader-elect`, `--health-probe-bind-address=:8081`, `--metrics-bind-address=:8443`, `--metrics-secure`, `--webhook-port=-1` | `config/manager/manager.yaml` (single definition; the chart must not duplicate them in extra args) |
-| Health port | `8081` (`/healthz`, `/readyz`) | manager arg + container port |
-| Metrics port | `8443`, HTTPS with authn/authz filtering (metrics RBAC in `config/rbac/metrics_auth_role.yaml`) | manager arg + `config/default/metrics_service.yaml` |
-| Webhook server | disabled (`--webhook-port=-1`); the service registers no webhooks and starts nothing certificate-dependent | `cmd/operator/options.go` |
-| Service account | `opendatahub-hardware-discovery-operator-controller-manager` | `config/rbac/service_account.yaml` |
-| Leader election | enabled by default; Lease ID `hardware-discovery.platform.opendatahub.io` in the resolved namespace | `cmd/operator/runtime.go` |
-| Namespace inputs | precedence: `--namespace` flag → `APPLICATIONS_NAMESPACE` env (ODH orchestrator injection) → in-cluster pod namespace; failure is loud, never a silent `default` | `cmd/operator/options.go` (`resolveNamespace`) |
-| `APPLICATIONS_NAMESPACE` behavior | places the leader-election Lease only. Both CRDs are cluster-scoped: the value never narrows a cache, a watch or reconciliation | `cmd/operator/options.go` |
-| Cache policy | unrestricted (no default namespaces, no per-object selectors). The singleton's node selector is reconcile-time logic that can change without a restart | `cmd/operator/runtime.go` (`managerOptions`) |
-| Registered controllers | exactly `inventory` and `device`, both through the framework builder (`ReconcilerFor` → `Build`) over the framework manager's cache-coherent client | `cmd/operator/registration.go` |
-| Source inputs | one shared source factory over `mgr.GetAPIReader()` — scan-driven direct reads; no source informers, so an absent or forbidden optional API (resource.k8s.io/v1) never blocks manager startup | `cmd/operator/registration.go` |
-| Concurrency | inventory scans serialized per kind (`HardwareDiscovery.infrastructure.platform.opendatahub.io` = 1) even under a larger global default; device controller keeps the global default | `internal/controller/inventory` (`ManagerControllerOptions`) |
-| Singleton creation | never at process startup; the singleton is publisher/orchestrator-owned input | runtime creates no HardwareDiscovery |
-| Image substitution | owned by packaging: `RELATED_IMAGE_HARDWARE_DISCOVERY_CONTROLLER` / chart `controllerImage.{repository,tag}` as whole values. The runtime itself consumes no related images (it deploys nothing) | task 009 (`packaging/module.yaml`) |
-| Image | `controller:latest` in source; overridden by `make build-installer IMG=...` / chart values | `config/manager` |
-
-## Build and run
-
-- `make build` — builds `bin/manager` from `./cmd`.
-- `make run` — runs the `operator` subcommand from the host (requires a
-  resolvable kubeconfig and namespace; see namespace inputs above).
-- `make build-installer` — renders `dist/install.yaml` (CRDs + RBAC +
-  Deployment). It never contacts a cluster.
-- There are deliberately no `install`/`deploy`/`uninstall`/`undeploy`
-  targets: cluster mutation belongs to the Helm chart and the Kind
-  harness, which require an explicit kubeconfig/context.
-
-## Dockerfile
-
-The image builds from clean source (`.dockerignore` filters local
-state) and runs as non-root distroless with a read-only root filesystem;
-the security context in `config/manager/manager.yaml` follows the
-restricted Pod Security Standard. The image contains only the manager
-binary — no simulator or driver artifacts.
-
-## Packaging (task 009)
-
-Helm is the deployment vehicle for the service itself. The chart is
-generated into `dist/chart/` by the pinned Kubebuilder `helm/v2-alpha`
-plugin (v4.16.0) from the same source config as `dist/install.yaml`,
-then curated to the packaging contract; its templates and preserved
-metadata are committed and reviewed like source. The plugin's own
-Makefile block (curl-based `install-helm`, colon-splitting image
-overrides, ambient-kubeconfig lifecycle targets) and its generated
-`.github/workflows/test-chart.yml` were reviewed and removed —
-`make/helm.mk` — with its shell logic in `hack/scripts/` — is the
-single curated Helm definition.
-
-Cluster-free pipeline (no target here contacts a cluster):
+## Everyday loop
 
 ```sh
-make manifests generate build
-make helm-chart          # regenerate dist/chart (plugin) + curate
-make helm-review-chart   # regenerate and require byte-identity with the committed chart
-make helm-lint           # helm lint dist/chart (pinned Helm v4.3.1 via go run)
-make helm-render         # helm template -> dist/rendered.yaml
-make helm-package        # helm package -> dist/*.tgz + archive inventory and standalone checks
-make module-lint         # odh-platform-tools `module lint` against packaging/module.yaml
+make manifests generate fmt vet lint test   # cluster-free checks
+make verify                                 # the above plus tracked-tree drift
+make build                                  # bin/manager
+make build-installer IMG=...                # dist/install.yaml (never contacts a cluster)
 ```
 
-Lifecycle targets (`helm-deploy`, `helm-status`, `helm-history`,
-`helm-rollback`, `helm-uninstall`) are deliberately inconvenient: every
-one requires an explicit `KUBECONFIG` and `HELM_KUBECONTEXT`, and the
-mutating ones additionally require `HELM_CHART_REVIEWED=yes` after
-`make helm-review-chart`. The controller image is passed as whole
-`CONTROLLER_IMAGE_REPOSITORY` / `CONTROLLER_IMAGE_TAG` values — never
-split from a combined reference.
+- Tools run as pinned `go run module@version` — never `@latest`, unpinned
+  curl installers, or hidden local installations.
+- `make verify` checks that regeneration leaves the tracked tree
+  byte-identical; it does not regenerate the Helm chart (that is
+  `make helm-chart`, reviewed separately).
+- There are deliberately no `install`/`deploy`/`undeploy` targets:
+  cluster mutation belongs to the Helm chart and the Kind harness, which
+  require an explicit kubeconfig/context.
 
-### Package-contract checklist
+## Architecture rules
 
-| ODH requirement | Delivered state |
-|---|---|
-| Module CRD identity | `packaging/module.yaml` selects the singleton GVK `HardwareDiscovery` (`infrastructure.platform.opendatahub.io/v1alpha1`), instance name `cluster` (CEL-enforced). The chart bundles exactly that CRD plus the `HardwareDevice` inventory CRD (the one additionally permitted kind). Module CRD and inventory CRD stay distinct: the module CR the ODH orchestrator reconciles is the HardwareDiscovery singleton, never a device. |
-| Singleton absence | The chart ships no `HardwareDiscovery` instance and the module tool creates no module CR; the singleton is publisher/orchestrator-owned input. Samples apply separately after CRDs are established. |
-| Chart / Deployment / container inputs | One Deployment `opendatahub-hardware-discovery-operator-controller-manager`, container `manager`, command `[/manager, operator]` — byte-identical names to `dist/install.yaml` and the runtime interface table above, because the chart pins `fullnameOverride` (release-name independent). Chart-rendered args (`--metrics-bind-address=:8443`, `--health-probe-bind-address=:8081`, `--webhook-port=-1`, `--leader-elect`; `--metrics-secure` defaults to true in the CLI) are the canonical runtime flags; they are never duplicated in `manager.args`. |
-| Image inputs | Chart values `controllerImage.{repository,tag}` as whole values (no colon splitting; a digest reference goes in the repository and suppresses the tag; registry ports render correctly). Module related image `RELATED_IMAGE_HARDWARE_DISCOVERY_CONTROLLER` with a whole `{{...}}` token resolved at deploy time. No production ODH image digest or source pin exists yet — the placeholder `controller` repository is render-time fallback only, and none was invented. |
-| Namespace / config alignment | The Deployment lands in the release namespace; `APPLICATIONS_NAMESPACE` injection places only the leader-election Lease (both CRDs are cluster-scoped); namespace precedence is owned by the runtime (`cmd/operator/options.go`), not the chart. |
-| Service permissions | Controller ClusterRole limited to real inputs/status/children (nodes; hardwaredevices incl. `/status`; hardwarediscoveries incl. `/status`; resourceslices; events), the leader-election Role (configmaps/leases/events) and metrics auth/reader roles. No framework deploy/label-GC privileges, no simulator ConfigMap reads, no wildcards. |
-| CRD lifecycle | CRDs ship as reviewed generated templates in `templates/crd/` with `helm.sh/resource-policy: keep` (retained on uninstall); no routine CRD deletion, no automatic adoption, no mixing Helm release resources with direct Kustomize apply/delete of the same objects. |
-| Lease | Not shipped (not on the module-lint allowlist); created at runtime by the leader-electing manager. |
-| Chart envelope scope | This chart is the operator-installation envelope (controller + CRDs + RBAC). It deploys the discovery service, never operands: discovery controllers render/deploy no Helm charts themselves. Future ODH orchestration and release/image publishing ownership is out of scope; module-lint success is packaging evidence, not orchestrator onboarding and not a runtime check. |
+- **Framework-first.** Manager, client, builder and action pipelines come
+  from `odh-platform-utilities/framework`; register controllers through
+  the framework builder, keep the inventory scan serialized
+  (`GroupKindConcurrency["HardwareDiscovery…"] = 1`), and preserve
+  cache/watch representation coherence. The service deploys no operands
+  and has no finalizer responsibilities; node selection happens at
+  reconcile time so it can change without a restart.
+- **Root-module imports need approval.** Direct imports from the root
+  `odh-platform-utilities` module (including convenience imports of its
+  constants/types) require substantive justification and review; do not
+  assume named root/framework types are interchangeable — use the actual
+  framework contracts.
+- **Core purity.** `pkg/discovery` imports only the standard library and
+  `apimachinery` (enforced by `TestPackageBoundary`); domain enums and
+  facts convert to API types at the codec/controller boundary, never
+  inside the core. API packages hold definitions, accessors and generated
+  plumbing — no business logic, no tests.
+- **Sources stay read-only and optional.** A missing or forbidden
+  optional source API (e.g. `resource.k8s.io/v1`) must not block manager
+  startup.
 
-### Packaging notes and known constraints
+## Code style
 
-- The module-lint tool (`odh-platform-tools` at pseudo-version
-  `v0.0.0-20261028215308-948ecd9b3ace`) cannot be built from the module
-  proxy: its CRD bases are gitignored upstream but `go:embed`ed.
-  `make module-lint` therefore verifies that the local checkout
-  (`ODH_PLATFORM_TOOLS_DIR`, default
-  `~/work/dev/rhai/odh-platform-tools`) sits exactly at the pinned
-  commit with a clean tree, generates the tool's go:embed'ed CRD base
-  there when missing (a gitignored build output of that repository) and
-  runs it in place through `go run` — nothing is copied into this
-  repository.
-- The module tool renders charts in strict template mode
-  (`missingkey=error`), so `values.yaml` declares every referenced key;
-  empty values keep the same "unset" semantics for the Helm CLI.
-- Regeneration is deterministic: `make helm-chart` is idempotent and
-  `make helm-review-chart` fails on any drift between the regenerated
-  chart and the committed reviewed one.
+- Explicit injected dependencies and clocks; copy data before mutation;
+  writes are idempotent; errors are wrapped, contextual and classifiable
+  with `errors.Is`.
+- Every new or touched parameter declares its own type (no boolean
+  sandwiches, no struct-blob parameters).
+- Prefer existing meaningful abstractions; no trivial forwarding or
+  nil-guard wrapper layers, no speculative frameworks, no unrelated
+  refactors.
+- Typed API boundaries, minimal additive supported facts, scoped RBAC.
+  Identity, class and host UID are immutable — that does not make every
+  spec/locator field immutable (the inventory controller maintains device
+  specs). Conditions are the contract; `status.phase` is framework-derived.
 
-## End-to-end testing (tasks 010/011)
+## Packaging
 
-The e2e harness is a build-tagged suite (`test/e2e`, tag `e2e`) that
-creates its own run-owned Kind clusters with private kubeconfigs under
-`/tmp` — it never touches the ambient kubeconfig — and installs the
-simulator plus the reviewed chart with a locally built controller image
-loaded as cargo (no registry push or pull).
+- Generated artifacts (`config/crd/bases/`, `config/rbac/role.yaml`,
+  chart templates) come from source manifests and markers: never
+  hand-edit them. Regenerate with `make manifests generate`, then
+  `make helm-chart` (plugin generation plus curation).
+- `dist/chart/` is reviewed, tracked output: `make helm-review-chart`
+  regenerates and requires byte-identity with the committed chart.
+  `make helm-lint`, `make helm-render`, `make helm-package` and
+  `make module-lint` are the remaining cluster-free packaging targets.
+- Controller image values stay whole (`controllerImage.repository` /
+  `.tag`, never colon-split from a combined reference).
+- Lifecycle targets (`helm-deploy` etc., in `make/helm.mk` with shell
+  logic in `hack/scripts/`) are deliberately inconvenient: explicit
+  `KUBECONFIG` and `HELM_KUBECONTEXT` always, `HELM_CHART_REVIEWED=yes`
+  for mutating ones.
+- `make module-lint` requires a pinned external checkout of
+  `odh-platform-tools` (`ODH_PLATFORM_TOOLS_DIR`) — it is not
+  self-contained, and passing it is packaging evidence, not completed
+  ODH onboarding. See `packaging/module.yaml`.
 
-Targets (defined in `make/e2e.mk`):
+## Hygiene
 
-```sh
-make e2e-image           # build the controller image into the runtime
-make demo                # TestHardwareDiscoveryDemonstration (both profiles)
-make test-e2e            # full gate: demonstration + harness verification
-make test-e2e-compile    # cluster-free: compile/vet the e2e-tagged suite
-```
-
-Environment:
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `E2E_RUNTIME` | `CONTAINER_TOOL` (podman) | container runtime backing the run-owned Kind clusters; `docker` is the accepted override |
-| `E2E_CONTROLLER_IMAGE_REPOSITORY` | `localhost/opendatahub-hardware-discovery-operator` | image repository loaded into each cluster |
-| `E2E_CONTROLLER_IMAGE_TAG` | `e2e` | image tag |
-| `E2E_TIMEOUT` | `120m` | go test timeout |
-
-The suite fails deterministically — never skips — when the runtime or
-image is missing. All run-owned Kind clusters are created with the
-containerd `privileged_without_host_devices = true` patch on runc: kind
-nodes otherwise inherit the host's `/dev` including volatile USB device
-nodes, whose re-enumeration breaks privileged pod create inside the node
-(host-hermetic by intent; neither the simulator nor the service needs
-host devices).
-
-Evidence and diagnostics land under `dist/e2e/` (gitignored): one YAML
-evidence document per profile run with server version, nodes, devices,
-facts, conditions and source snapshots. On failure the harness collects
-events, pod and node logs under `/tmp` for the exact run-owned cluster
-and tears only that cluster down. The scenario catalog, the
-incarnation-convergence race narrative and the executed results are in
-[`testing.md`](testing.md).
+Never commit `.context/`, credentials, kubeconfigs, binaries, or `dist/`
+outputs other than the reviewed `dist/chart/` source. Do not encode old
+task IDs, workstation paths or plan-run orchestration rules as project
+policy.

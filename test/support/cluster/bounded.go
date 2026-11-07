@@ -25,7 +25,7 @@ import (
 
 // runBounded executes a context-less provider operation under an explicit
 // deadline. This is the gate-recorded practical method for the pinned kind
-// library (design doc §12): kind's Provider.Create/Delete take no context,
+// library: kind's Provider.Create/Delete take no context,
 // so a timeout cannot cancel the underlying work. The wrapper therefore:
 //
 //   - returns the operation's own error when it completes inside the bound;

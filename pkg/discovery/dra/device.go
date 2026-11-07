@@ -21,8 +21,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
-// The approved NVIDIA whole-GPU attribute contract (design doc §8,
-// verified against the pinned fake-gpu-operator v0.2.1 dra-plugin).
+// The approved NVIDIA whole-GPU attribute contract, verified against the
+// pinned fake-gpu-operator v0.2.1 dra-plugin.
 // Qualified gpu.nvidia.com/* keys are primary; the unqualified uuid/model
 // keys are the v0.2.1 back-compat forms and are read exactly as emitted,
 // never guessed from device names or counts.

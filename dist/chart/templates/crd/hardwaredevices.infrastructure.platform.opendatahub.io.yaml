@@ -58,7 +58,7 @@ spec:
           controller; the status is written exclusively by the HardwareDevice
           controller through the /status subresource.
 
-          Additive extension policy (design doc §4.5): per-class observed facts live
+          Additive extension policy: per-class observed facts live
           in optional status structs selected by the immutable spec.class (in this
           PoC, only status.accelerator); future classes arrive as new sibling
           structs plus new spec.class enum values, and cross-class facts stay at the

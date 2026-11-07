@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// TestHardwareDiscoveryDemonstration is the task-011 two-plane
+// TestHardwareDiscoveryDemonstration is the two-plane
 // demonstration: the actual service chart — real ServiceAccount, RBAC and
 // leader election, never a host-side admin manager substitute — running
 // against the driver-free classic and DRA simulator inputs on run-owned
@@ -121,7 +121,7 @@ const (
 	evidenceDir = "../../dist/e2e"
 )
 
-// Scenario timings (task 011): short rescan and heartbeat bounds keep
+// Scenario timings: short rescan and heartbeat bounds keep
 // inventory recreation and status refresh observable without fixed
 // sleeps; the node grace period stays at its default (no node-deletion
 // scenario runs).
@@ -1040,7 +1040,7 @@ func verifyDRADiscovery(t *testing.T, ctx context.Context, cli client.Client, no
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(available).To(BeTrue(), "stable resource.k8s.io/v1 must be served by the pinned baseline")
 
-	// Gate-free DRA profile (task 011): the service never reads
+	// Gate-free DRA profile: the service never reads
 	// DeviceClasses, so no feature gate is enabled and the alpha
 	// extendedResourceName field is not asserted.
 	class, err := simulator.GetDeviceClass(ctx, cli)

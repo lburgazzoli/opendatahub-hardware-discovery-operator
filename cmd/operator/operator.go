@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package operator contains the standalone service runtime (task 008):
+// Package operator contains the standalone service runtime:
 // the `operator` subcommand that starts one controller-runtime manager
 // wrapping both discovery controllers through the framework builder.
 package operator

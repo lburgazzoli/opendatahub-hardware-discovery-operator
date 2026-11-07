@@ -136,7 +136,7 @@ func observe(
 		// Source failures retain every fact, timestamp and provenance
 		// of the last successful observation: a failure never makes
 		// stale facts look freshly collected. The condition, not
-		// backoff, is the reporting channel (design doc §6.5); input
+		// backoff, is the reporting channel; input
 		// events drive faster retries.
 		return notObserved(rr, generation, classifyObserveError(err), err.Error(), cfg.maxStale)
 	}

@@ -23,7 +23,7 @@ import (
 )
 
 // Locator locates a device in a stable resource.k8s.io/v1 ResourceSlice
-// advertisement (design doc §4.1/§8): the allow-listed driver, the pool
+// advertisement: the allow-listed driver, the pool
 // name and the device name within the pool. Devices located this way
 // carry a real vendor identity (identity.kind uuid).
 type Locator struct {

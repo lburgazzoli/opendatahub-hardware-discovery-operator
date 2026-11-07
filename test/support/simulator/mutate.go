@@ -27,7 +27,7 @@ import (
 )
 
 // SetPoolSliceCount rewrites spec.resourceSliceCount on every published
-// ResourceSlice of one driver/pool (the task-011 incomplete-pool
+// ResourceSlice of one driver/pool (the incomplete-pool
 // regression).
 //
 // A pool snapshot is complete when the number of slices carrying the
@@ -72,7 +72,7 @@ func SetPoolSliceCount(ctx context.Context, cli client.Client, driver, pool stri
 // are preserved verbatim. The mutate function receives the parsed document
 // and may change any field; harness scenarios change gpuProduct/gpuMemory.
 //
-// This is step 1 of the frozen fact-mutation protocol (design doc §9.1):
+// This is step 1 of the frozen fact-mutation protocol:
 // the topology-server serves the ConfigMap live, but the native DRA plugin
 // enumerates only at startup. After mutating, call RestartDRAPlugin and
 // then WaitForChangedResourceSlices before asserting anything about the

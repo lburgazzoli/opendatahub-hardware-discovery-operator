@@ -5,8 +5,7 @@
 # third shipped CRD, it creates no module CR instance, and it is not a
 # claim that the ODH operator was modified.
 #
-# Names align with the delivered runtime interface (docs/development.md)
-# and the chart's fixed fullname (dist/chart/values.yaml,
+# Names align with the chart's fixed fullname (dist/chart/values.yaml,
 # fullnameOverride: opendatahub-hardware-discovery-operator): the chart
 # renders the same object names as the Kustomize installer regardless of
 # the release name, so this definition stays valid under any release.

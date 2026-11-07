@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package dra implements the stable DRA discovery source (design doc
-// §8): whole NVIDIA GPUs advertised in resource.k8s.io/v1 ResourceSlice
+// Package dra implements the stable DRA discovery source: whole NVIDIA
+// GPUs advertised in resource.k8s.io/v1 ResourceSlice
 // pools by allow-listed drivers, with the vendor GPU UUID as the device
 // identity (identity.kind uuid). The source reads only ResourceSlices
 // through an injected read-only client — DeviceClasses carry no identity

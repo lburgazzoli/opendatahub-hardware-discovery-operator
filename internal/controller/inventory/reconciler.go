@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package inventory contains the singleton HardwareDiscovery controller
-// (design doc §6/§10): it turns the singleton's discovery configuration
+// Package inventory contains the singleton HardwareDiscovery controller:
+// it turns the singleton's discovery configuration
 // into a set of owned HardwareDevice identity specs, prunes devices after
 // authoritative disappearance, deliberate selector removal or node-grace
 // expiry, and reports the singleton status through the framework
@@ -62,7 +62,7 @@ const (
 	AnnotationNodeOrphanedAt = discovery.LabelPrefix + "/node-orphaned-at"
 
 	// defaultRescanPeriod bounds the periodic rescan that runs even
-	// without input events (design doc §10.1).
+	// without input events.
 	defaultRescanPeriod = 5 * time.Minute
 
 	// defaultNodeGracePeriod is how long devices of an absent or

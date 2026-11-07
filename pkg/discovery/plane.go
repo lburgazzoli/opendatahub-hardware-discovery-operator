@@ -23,8 +23,7 @@ import (
 )
 
 // ErrNoPlaneEvidence reports that no registered source claims a node: the
-// node's inventory is unknown, never zero devices (design doc §8.2,
-// amendments 2+3).
+// node's inventory is unknown, never zero devices.
 var ErrNoPlaneEvidence = errors.New("discovery: no registered source claims the node")
 
 // ErrMissingEnumeration reports a source that claims a node without a
@@ -36,7 +35,7 @@ var ErrMissingEnumeration = errors.New("discovery: claiming source has no enumer
 // with the same ID.
 var ErrDuplicateSource = errors.New("discovery: duplicate source id in registry")
 
-// Sources is the ordered source registry (design doc §7, amendments 2+3).
+// Sources is the ordered source registry.
 // Priority is the registration order: the production binary registers DRA
 // before classic, so DRA claims win the SelectNode fold. Duplicate source
 // IDs are rejected at registration. The zero value is an empty registry.
@@ -101,8 +100,7 @@ type NodeSelection struct {
 }
 
 // SelectNode resolves the authoritative enumeration for one node by
-// folding the registered sources' claims in priority order (design doc
-// §8.2/§8.3, amendments 2+3).
+// folding the registered sources' claims in priority order.
 //
 // The first source that claims the node decides: its enumeration's Outcome
 // governs — Success is authoritative even when empty, Unknown retains —

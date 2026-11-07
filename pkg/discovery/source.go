@@ -15,8 +15,7 @@ limitations under the License.
 */
 
 // Package discovery holds the source and identity contracts shared by the
-// discovery source plugins and the two reconcilers (design doc §7,
-// docs/design/poc-contract.md, amendments 2+3). The package is pure,
+// discovery source plugins and the two reconcilers. The package is pure,
 // source-agnostic normalization logic: it never enumerates source kinds,
 // planes or input types. It imports only k8s.io/apimachinery and the
 // standard library, never constructs HardwareDevice objects, and never
@@ -51,7 +50,7 @@ func (p Plane) Valid() bool {
 }
 
 // IdentityKind distinguishes real vendor identity from synthetic
-// node-scoped identity (amendment 3, design doc §4.1): uuid is a real
+// node-scoped identity: uuid is a real
 // vendor device ID (GPU UUID, published by DRA); nodeIndex is a synthetic
 // identity derived from the node name and the device index within the node
 // (classic labels source) — stable only for the node incarnation and not
@@ -157,7 +156,7 @@ type Identity struct {
 	// or the deterministic <node-name>-gpu-<index> for Kind nodeIndex.
 	// nodeIndex ids are node-scoped and die with the node incarnation —
 	// a deliberate, user-approved relaxation of the earlier
-	// no-fabricated-identity rule (amendment 3), kept distinguishable from
+	// no-fabricated-identity rule, kept distinguishable from
 	// vendor identity via Kind.
 	ID string
 	// Kind is the nature of the identity: uuid (real vendor identity,
@@ -309,8 +308,8 @@ func (o Observation) Validate() error {
 	return nil
 }
 
-// Source is the discovery source plugin contract (design doc §7,
-// amendments 2+3). A source owns its locator type, its input reading (via
+// Source is the discovery source plugin contract. A source owns its
+// locator type, its input reading (via
 // injected read-only clients), its node-claim rule and its facts parsing;
 // the core folds claiming sources by priority. A source never owns
 // Kubernetes inventory writes and never constructs HardwareDevice objects.

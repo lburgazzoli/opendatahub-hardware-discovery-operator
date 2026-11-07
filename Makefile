@@ -14,9 +14,8 @@ SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
 # Tool invocation style: pinned `go run module@version` only. Never @latest,
-# unpinned curl installers, or hidden local installations. Versions below are
-# the approved pins from the task-001 execution contract
-# (docs/design/poc-contract.md §2.2).
+# unpinned curl installers, or hidden local installations (see
+# docs/development.md).
 GO_CMD ?= go
 CONTROLLER_TOOLS_VERSION ?= v0.22.0
 KUSTOMIZE_VERSION ?= v5.8.1
@@ -128,7 +127,7 @@ build-installer: manifests generate ## Generate a consolidated YAML with CRDs an
 
 # NOTE on deployment: there are deliberately no cluster-mutating
 # `install`/`deploy`/`undeploy` targets. Deployment ownership belongs to
-# the Helm chart (task 009) and the Kind harness (task 010), which
+# the Helm chart and the Kind harness, which
 # require an explicit kubeconfig/context; build-installer only renders
 # YAML into dist/ and never contacts a cluster.
 

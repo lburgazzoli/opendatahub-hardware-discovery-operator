@@ -1,4 +1,4 @@
-# Example HardwareDevice (design doc §4.3).
+# Example HardwareDevice.
 #
 # HardwareDevice objects are created and owned by the HardwareDiscovery
 # singleton controller: the service derives the object name from

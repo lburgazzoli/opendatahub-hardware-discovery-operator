@@ -86,7 +86,7 @@ func TestCodec(t *testing.T) {
 }
 
 // TestSelectNodeFold proves the DRA dominance boundary through the
-// registry fold (design doc §8.2): the DRA source itself never inspects
+// registry fold: the DRA source itself never inspects
 // classic input — priority is decided by SelectNode.
 func TestSelectNodeFold(t *testing.T) {
 	t.Run("dra claims win the fold", func(t *testing.T) {

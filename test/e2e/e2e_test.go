@@ -26,8 +26,8 @@ limitations under the License.
 //
 // This is explicitly NOT the two-plane discovery demonstration: no service
 // chart is installed and no HardwareDevice output is asserted here. The
-// service scenarios are added by task 011, once the reviewed Helm chart
-// exists, and must not be confused with this facility check.
+// service scenarios live in the demonstration suite and must not be
+// confused with this facility check.
 package e2e
 
 import (
@@ -67,7 +67,7 @@ const (
 	// its own context so a dead scenario context cannot hide evidence.
 	diagnosticsTimeout = 2 * time.Minute
 
-	// frozen simulator pool facts (design doc §9.1 shared values).
+	// frozen simulator pool facts (frozen shared values).
 	frozenGpuProduct  = "Tesla-K80"
 	frozenGpuMemoryMi = 11441
 	frozenGpuCount    = 2

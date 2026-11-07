@@ -57,12 +57,12 @@ const (
 
 	// ConditionTypeObserved reports the outcome of the last observation
 	// attempt: collector observations, not hardware health and not free
-	// allocation capacity (design doc §4.3).
+	// allocation capacity.
 	ConditionTypeObserved = "Observed"
 )
 
-// Condition reasons of the device observation condition (design doc
-// §4.3/§6.5). They describe the collector, never the hardware.
+// Condition reasons of the device observation condition. They describe
+// the collector, never the hardware.
 const (
 	// reasonObserved reports a successful observation.
 	reasonObserved = "Observed"
@@ -91,12 +91,12 @@ const (
 	// reasonPoolIncomplete reports an incomplete DRA pool snapshot.
 	reasonPoolIncomplete = "PoolIncomplete"
 	// reasonSourceUnavailable reports an observation that could not be
-	// completed (design doc §6.5 device-level umbrella reason).
+	// completed (device-level umbrella reason).
 	reasonSourceUnavailable = "SourceUnavailable"
 )
 
 // defaultMaxStale is the heartbeat bound for unchanged facts when the
-// singleton omits spec.maxStale or cannot be read (design doc §5.1).
+// singleton omits spec.maxStale or cannot be read.
 const defaultMaxStale = 10 * time.Minute
 
 // SourceFactory builds the ordered source registry for one singleton

@@ -189,7 +189,7 @@ func WaitForResourceSlices(ctx context.Context, cli client.Client, driver, pool 
 // matched slice in place — device content that no longer matches the
 // previous snapshot.
 //
-// The frozen fact-mutation protocol (design doc §9.1) describes the change
+// The frozen fact-mutation protocol describes the change
 // as a generation bump. [source-inspected] FGO v0.2.1 pins
 // k8s.io/dynamic-resource-allocation v0.34.2, whose resourceslice
 // controller keeps the generation when exactly one matched slice is updated

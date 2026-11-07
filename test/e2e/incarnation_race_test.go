@@ -16,8 +16,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// The incarnation-convergence race (design doc §6.3 amendment,
-// status-write incarnation semantics): a status write computed against
+// The incarnation-convergence race (status-write
+// incarnation semantics): a status write computed against
 // one HardwareDevice incarnation can transiently land on a recreated
 // object of the same name — a CR /status server-side apply carries no
 // optimistic-concurrency precondition and the payload's uid is not a

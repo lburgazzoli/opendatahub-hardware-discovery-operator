@@ -37,8 +37,8 @@ import (
 // heartbeats — is filtered so observation requeues stay bounded. There
 // is deliberately no generation predicate: Node updates do not bump a
 // spec generation. The filtering mirrors the inventory controller's
-// Node watch (design doc §10.1: node changes map to the singleton and
-// affected devices).
+// Node watch: node changes map to the singleton and
+// affected devices.
 func nodeEvidencePredicate(scheme *runtime.Scheme) predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {

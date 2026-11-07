@@ -126,7 +126,7 @@ func (f *fixture) seedDeviceStatus(t *testing.T, name string, plane infrastructu
 	NewWithT(t).ExpectWithOffset(2, f.client.Status().Update(context.Background(), device)).To(Succeed())
 }
 
-// TestReconcileClassicEvidenceRetention is the task-017 regression for
+// TestReconcileClassicEvidenceRetention is the regression for
 // the classic plane: with the production source factory over a fake
 // cluster and the real classic source, losing classic evidence — a
 // missing or malformed gpu.count label, or missing extended-resource
@@ -231,7 +231,7 @@ func TestReconcileClassicEvidenceRetention(t *testing.T) {
 	})
 }
 
-// TestReconcileSelectedUnknownRetainsClassic is the task-017 regression
+// TestReconcileSelectedUnknownRetainsClassic is the regression
 // for the mixed plane: when the selected source's evaluation is Unknown —
 // a DRA-incomplete pool on a node that also carries classic evidence —
 // the classic devices are retained even when the classic source would

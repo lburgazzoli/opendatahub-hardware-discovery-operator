@@ -114,7 +114,7 @@ func TestCodec(t *testing.T) {
 }
 
 // TestSelectNodeFold proves the DRA dominance boundary through the
-// registry fold (design doc §8.2): the classic source itself never
+// registry fold: the classic source itself never
 // inspects DRA input — priority is decided by SelectNode.
 func TestSelectNodeFold(t *testing.T) {
 	draClaims := &claimFake{id: draSourceID, plane: discovery.PlaneDRA, claims: true}

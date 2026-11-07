@@ -47,7 +47,7 @@ func (a AcceleratorFacts) Equal(b AcceleratorFacts) bool {
 // ObservationEqual reports whether a and b carry the same observable state
 // — the same proven identity (device id and host UID), the same identity
 // kind, the same allocation plane, the same source locator and the same
-// facts — deliberately excluding CollectedAt (design doc §10.1): a freshly
+// facts — deliberately excluding CollectedAt: a freshly
 // stamped identical observation is not a facts change. Heartbeat-driven
 // status writes for unchanged observations are decided by the caller
 // against its injected clock, not by this comparison.

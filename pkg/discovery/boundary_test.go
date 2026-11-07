@@ -29,7 +29,7 @@ import (
 )
 
 // TestPackageBoundary proves the core discovery contract package stays
-// pure (design doc §3): non-test sources import only k8s.io/apimachinery
+// pure: non-test sources import only k8s.io/apimachinery
 // and the standard library — no controller-runtime, no client-go, no
 // k8s.io/api, no Cobra, no project API/controller/CLI packages, so neither
 // controllers nor simulator internals can leak into the generic contracts

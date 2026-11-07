@@ -29,7 +29,7 @@ type poolKey struct {
 	name   string
 }
 
-// poolSnapshot is the selected view of one pool (design doc §8.2): only
+// poolSnapshot is the selected view of one pool: only
 // the slices present at the highest generation, and whether they satisfy
 // the pool's declared resourceSliceCount. Incomplete or conflicting
 // snapshots are Unknown — no partial updates, no authoritative empty
