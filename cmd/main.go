@@ -36,7 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	infrastructurev1alpha1 "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/api/infrastructure/v1alpha1"
-	hardwaredevicecontroller "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/internal/controller/hardwaredevice"
+	devicecontroller "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/internal/controller/device"
 	inventorycontroller "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/internal/controller/inventory"
 	// +kubebuilder:scaffold:imports
 )
@@ -183,11 +183,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&hardwaredevicecontroller.HardwareDeviceReconciler{
+	if err := (&devicecontroller.Reconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		// The same production source factory as the inventory
+		// controller: both resolve devices through identically
+		// configured sources, with scan-driven direct reads.
+		Sources: inventorycontroller.NewSourceFactory(mgr.GetAPIReader()),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "hardwaredevice")
+		setupLog.Error(err, "Failed to create controller", "controller", "device")
 		os.Exit(1)
 	}
 	if err := (&inventorycontroller.Reconciler{
