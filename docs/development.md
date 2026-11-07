@@ -57,7 +57,8 @@ metadata are committed and reviewed like source. The plugin's own
 Makefile block (curl-based `install-helm`, colon-splitting image
 overrides, ambient-kubeconfig lifecycle targets) and its generated
 `.github/workflows/test-chart.yml` were reviewed and removed —
-`make/helm.mk` is the single curated Helm make definition.
+`make/helm.mk` — with its shell logic in `hack/scripts/` — is the
+single curated Helm definition.
 
 Cluster-free pipeline (no target here contacts a cluster):
 
@@ -98,11 +99,13 @@ split from a combined reference.
 - The module-lint tool (`odh-platform-tools` at pseudo-version
   `v0.0.0-20261028215308-948ecd9b3ace`) cannot be built from the module
   proxy: its CRD bases are gitignored upstream but `go:embed`ed.
-  `make module-lint` therefore verifies the pinned commit of the local
-  checkout (`ODH_PLATFORM_TOOLS_DIR`, default
-  `~/work/dev/rhai/odh-platform-tools`), extracts exactly that commit
-  into `dist/module-tool`, generates the tool's own CRDs there and runs
-  it from there — the user's checkout is never mutated.
+  `make module-lint` therefore verifies that the local checkout
+  (`ODH_PLATFORM_TOOLS_DIR`, default
+  `~/work/dev/rhai/odh-platform-tools`) sits exactly at the pinned
+  commit with a clean tree, generates the tool's go:embed'ed CRD base
+  there when missing (a gitignored build output of that repository) and
+  runs it in place through `go run` — nothing is copied into this
+  repository.
 - The module tool renders charts in strict template mode
   (`missingkey=error`), so `values.yaml` declares every referenced key;
   empty values keep the same "unset" semantics for the Helm CLI.
