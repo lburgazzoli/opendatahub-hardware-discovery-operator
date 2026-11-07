@@ -1,0 +1,46 @@
+# PlatformModuleDefinition for the hardware discovery service.
+#
+# Packaging metadata for ODH consumption: it describes the singleton GVK,
+# the Helm chart source and the controller image contract. It is not a
+# third shipped CRD, it creates no module CR instance, and it is not a
+# claim that the ODH operator was modified.
+#
+# Names align with the delivered runtime interface (docs/development.md)
+# and the chart's fixed fullname (dist/chart/values.yaml,
+# fullnameOverride: opendatahub-hardware-discovery-operator): the chart
+# renders the same object names as the Kustomize installer regardless of
+# the release name, so this definition stays valid under any release.
+apiVersion: config.opendatahub.io/v1alpha1
+kind: PlatformModuleDefinition
+metadata:
+  name: hardware-discovery
+spec:
+  # The module CR this service owns: the fixed-name singleton
+  # (root-schema CEL enforces metadata.name == "cluster"). The module
+  # tool never creates it; the publisher/orchestrator does.
+  instance:
+    name: cluster
+    type:
+      group: infrastructure.platform.opendatahub.io
+      version: v1alpha1
+      kind: HardwareDiscovery
+  manifests:
+    format: helm
+    helm:
+      # Chart root relative to this file: the reviewed generated chart.
+      path: ../dist/chart
+      values: {}
+  relatedImages:
+  - RELATED_IMAGE_HARDWARE_DISCOVERY_CONTROLLER
+  controller:
+    deployment:
+      # Rendered Deployment name (chart fullname + controller-manager).
+      name: opendatahub-hardware-discovery-operator-controller-manager
+      container:
+        # Container name from config/manager/manager.yaml.
+        name: manager
+        # Whole related-image token: resolved from the environment or a
+        # --related-images-file at deploy time, never colon-split. The
+        # chart's own default image (controllerImage.{repository,tag} in
+        # dist/chart/values.yaml) is the render-time fallback.
+        image: '{{RELATED_IMAGE_HARDWARE_DISCOVERY_CONTROLLER}}'

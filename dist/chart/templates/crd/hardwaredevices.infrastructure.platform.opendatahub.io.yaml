@@ -1,0 +1,372 @@
+{{- if .Values.crd.enabled }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    {{- if .Values.crd.keep }}
+    "helm.sh/resource-policy": keep
+    {{- end }}
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: hardwaredevices.infrastructure.platform.opendatahub.io
+spec:
+  group: infrastructure.platform.opendatahub.io
+  names:
+    categories:
+    - odh
+    - platform
+    - all
+    kind: HardwareDevice
+    listKind: HardwareDeviceList
+    plural: hardwaredevices
+    shortNames:
+    - hwdev
+    - hw
+    singular: hardwaredevice
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.class
+      name: Class
+      type: string
+    - jsonPath: .status.accelerator.model
+      name: Model
+      type: string
+    - jsonPath: .status.accelerator.memory
+      name: Memory
+      type: string
+    - jsonPath: .spec.host.name
+      name: Node
+      type: string
+    - jsonPath: .status.allocationPlane
+      name: Plane
+      type: string
+    - jsonPath: .status.collectedAt
+      name: Collected
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          HardwareDevice represents one whole hardware device (in this PoC, one
+          whole GPU). One object never represents an allocation replica, a MIG
+          slice, or any other partition of a device.
+
+          The spec is written exclusively by the HardwareDiscovery singleton
+          controller; the status is written exclusively by the HardwareDevice
+          controller through the /status subresource.
+
+          Additive extension policy (design doc §4.5): per-class observed facts live
+          in optional status structs selected by the immutable spec.class (in this
+          PoC, only status.accelerator); future classes arrive as new sibling
+          structs plus new spec.class enum values, and cross-class facts stay at the
+          status top level. No placeholder empty structs, catch-all vendor attribute
+          maps, or speculative locators ship in v1alpha1.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec is the desired state of HardwareDevice.
+            properties:
+              class:
+                description: |-
+                  class is the device class this inventory entry belongs to.
+                  accelerator is the only class in this PoC; new values are additive,
+                  reviewed schema changes.
+                enum:
+                - accelerator
+                type: string
+                x-kubernetes-validations:
+                - message: class is immutable
+                  rule: self == oldSelf
+              host:
+                description: |-
+                  host is the Node the device was discovered on. Node replacement is
+                  delete-and-recreate of the HardwareDevice, never an in-place UID
+                  transfer.
+                properties:
+                  name:
+                    description: |-
+                      name is the Node name at discovery time. The full node name always
+                      lives here even when the service-written node label is truncated.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  uid:
+                    description: |-
+                      uid is the Node UID at discovery time. A UID change is a new node
+                      incarnation: the old device object is deleted after the grace period
+                      and a fresh one is created; status is never transferred.
+                    maxLength: 64
+                    minLength: 1
+                    type: string
+                    x-kubernetes-validations:
+                    - message: host.uid is immutable
+                      rule: self == oldSelf
+                required:
+                - name
+                - uid
+                type: object
+              identity:
+                description: identity is the immutable device identity.
+                properties:
+                  id:
+                    description: |-
+                      id is the device ID: the vendor device ID (GPU UUID) for kind uuid,
+                      or the deterministic <node-name>-gpu-<index> for kind nodeIndex
+                      (hash-truncated to stay within 63 characters). It is immutable and
+                      unique within the node incarnation.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                    x-kubernetes-validations:
+                    - message: identity.id is immutable
+                      rule: self == oldSelf
+                  kind:
+                    description: |-
+                      kind is the nature of the identity: uuid is a real vendor device ID
+                      (for NVIDIA GPUs, the GPU UUID published by DRA); nodeIndex is a
+                      synthetic, node-scoped identity derived from the node name and the
+                      device index within the node (classic labels source). A nodeIndex
+                      identity is stable only for the node incarnation and is not joinable
+                      with telemetry or vendor tooling.
+                    enum:
+                    - uuid
+                    - nodeIndex
+                    type: string
+                    x-kubernetes-validations:
+                    - message: identity.kind is immutable
+                      rule: self == oldSelf
+                required:
+                - id
+                - kind
+                type: object
+              source:
+                description: |-
+                  source is the locator telling the device controller how to re-observe
+                  this device: the registered source kind plus exactly one typed arm.
+                properties:
+                  classic:
+                    description: |-
+                      classic locates the device in the classic labels input of its hosting
+                      node (GFD-style node labels plus node extended resources).
+                    properties:
+                      index:
+                        description: |-
+                          index is the device's index within the node's published gpu.count.
+                          It is stable for the node incarnation and dies with it.
+                        format: int32
+                        minimum: 0
+                        type: integer
+                      node:
+                        description: |-
+                          node is the name of the Node whose labels describe this device. It
+                          always equals spec.host.name (enforced by CEL).
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - index
+                    - node
+                    type: object
+                  dra:
+                    description: |-
+                      dra locates the device in a stable resource.k8s.io/v1 ResourceSlice
+                      advertisement. The enforced driver allow-list is the singleton's
+                      spec.sources.dra.driverAllowList (default pin gpu.nvidia.com).
+                    properties:
+                      device:
+                        description: device is the ResourceSlice device.name of this
+                          device.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      driver:
+                        description: |-
+                          driver is the DRA driver that advertised the device (for example
+                          gpu.nvidia.com). The accepted set is configurable via the singleton's
+                          driverAllowList; the value must be a DNS-style driver name.
+                        maxLength: 253
+                        minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                        type: string
+                      pool:
+                        description: pool is the ResourceSlice pool.name the device
+                          was advertised in.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                    required:
+                    - device
+                    - driver
+                    - pool
+                    type: object
+                  kind:
+                    description: |-
+                      kind is the registered source kind that owns the locator arm. It must
+                      match the set arm (enforced by CEL).
+                    enum:
+                    - dra
+                    - classic
+                    type: string
+                required:
+                - kind
+                type: object
+            required:
+            - class
+            - host
+            - identity
+            - source
+            type: object
+            x-kubernetes-validations:
+            - message: exactly one source locator (dra or classic) is required
+              rule: '(has(self.source.dra) ? 1 : 0) + (has(self.source.classic) ?
+                1 : 0) == 1'
+            - message: source.kind must match the set source arm
+              rule: (self.source.kind == 'dra') == has(self.source.dra)
+            - message: classic source node must match spec.host.name
+              rule: '!has(self.source.classic) || self.source.classic.node == self.host.name'
+          status:
+            description: status is the observed state of HardwareDevice.
+            properties:
+              accelerator:
+                description: |-
+                  accelerator carries the observed facts of an accelerator-class device.
+                  It is present iff facts have been observed for a device whose
+                  spec.class is accelerator (enforced by CEL). Future device classes
+                  arrive as new sibling structs; class-specific facts never live at the
+                  status top level.
+                properties:
+                  memory:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      memory is the observed device memory as a Quantity in bytes when the
+                      source publishes it.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  model:
+                    description: |-
+                      model is the observed device model (the classic
+                      nvidia.com/gpu.product label or the DRA gpu.nvidia.com/productName
+                      attribute).
+                    type: string
+                  vendor:
+                    description: |-
+                      vendor is the device vendor when the source publishes it. Neither the
+                      classic GFD labels nor the NVIDIA DRA attributes carry vendor, so it
+                      is omitted in this PoC.
+                    type: string
+                type: object
+              allocationPlane:
+                description: allocationPlane is the allocation plane that evidenced
+                  the device.
+                enum:
+                - classic
+                - dra
+                type: string
+              collectedAt:
+                description: |-
+                  collectedAt is the collector observation time. It is the collector's
+                  own clock, never a producer timestamp, and it is only refreshed by a
+                  successful observation.
+                format: date-time
+                type: string
+              conditions:
+                items:
+                  properties:
+                    lastHeartbeatTime:
+                      description: |-
+                        The last time we got an update on a given condition, this should not be set and is
+                        present only for backward compatibility reasons
+                      format: date-time
+                      type: string
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.
+                        If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: message is a human-readable message indicating
+                        details about the transition.
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration
+                        is 9, the condition is out of date with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        The value should be a CamelCase string.
+                      type: string
+                    severity:
+                      description: |-
+                        Severity with which to treat failures of this type of condition.
+                        When this is not specified, it defaults to Error.
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
+              observedGeneration:
+                description: The generation observed by the resource controller.
+                format: int64
+                type: integer
+              phase:
+                type: string
+              sourceRef:
+                description: |-
+                  sourceRef is the provenance of the last successful observation, for
+                  example dra/gpu.nvidia.com/<pool> or classic/<node>. It is replaced,
+                  never merged, on an observed source change.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: status.accelerator is only valid when spec.class is accelerator
+          rule: '!has(self.status.accelerator) || self.spec.class == ''accelerator'''
+    served: true
+    storage: true
+    subresources:
+      status: {}
+{{- end }}
