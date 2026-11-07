@@ -60,14 +60,25 @@ spec:
       containers:
       - command:
         - /manager
+        # Canonical runtime command (docs/development.md): the operator
+        # subcommand runs both controllers. Positive health/metrics
+        # ports are templated here once; the chart must not duplicate
+        # them in extra args.
         args:
+          - operator
           - --leader-elect
           - --health-probe-bind-address=:8081
+          - --metrics-bind-address=:8443
+          - --metrics-secure
+          - --webhook-port=-1
         image: controller:latest
         name: manager
         ports:
         - containerPort: 8081
           name: health
+          protocol: TCP
+        - containerPort: 8443
+          name: metrics
           protocol: TCP
         securityContext:
           readOnlyRootFilesystem: true

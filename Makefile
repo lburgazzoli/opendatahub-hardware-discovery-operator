@@ -55,7 +55,7 @@ help: ## Display this help.
 # NOTE on generated artifacts: config/crd/bases/, config/rbac/role.yaml and
 # config/manager/kustomization.yaml are gitignored on purpose. A clean clone
 # reproduces them with `make manifests` (CRDs and RBAC from markers) and with
-# `make build-installer`/`make deploy` (the manager kustomization is recreated
+# `make build-installer` (the manager kustomization is recreated
 # by `kustomize create --autodetect` when absent, then `kustomize edit` sets
 # the image). api/**/zz_generated.deepcopy.go is tracked and drift-checked by
 # `make verify`.
@@ -106,11 +106,11 @@ drift-check: ## Fail if tracked files drifted from generated/formatted state.
 
 .PHONY: build
 build: ## Build manager binary.
-	$(GO_CMD) build -o bin/manager cmd/main.go
+	$(GO_CMD) build -o bin/manager ./cmd
 
 .PHONY: run
-run: manifests generate fmt vet ## Run a controller from your host.
-	$(GO_CMD) run ./cmd/main.go
+run: manifests generate fmt vet ## Run the operator subcommand from your host.
+	$(GO_CMD) run ./cmd operator
 
 .PHONY: container-build
 container-build: ## Build the manager container image (podman by default, CONTAINER_TOOL=docker to override).
@@ -126,30 +126,11 @@ build-installer: manifests generate ## Generate a consolidated YAML with CRDs an
 	cd config/manager && { [ -f kustomization.yaml ] || $(KUSTOMIZE) create --autodetect; } && $(KUSTOMIZE) edit set image controller=$(IMG)
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
-##@ Deployment
-
-ifndef ignore-not-found
-  ignore-not-found = false
-endif
-
-.PHONY: install
-install: manifests ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-	@out="$$( $(KUSTOMIZE) build config/crd 2>/dev/null || true )"; \
-	if [ -n "$$out" ]; then echo "$$out" | kubectl apply -f -; else echo "No CRDs to install; skipping."; fi
-
-.PHONY: uninstall
-uninstall: manifests ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	@out="$$( $(KUSTOMIZE) build config/crd 2>/dev/null || true )"; \
-	if [ -n "$$out" ]; then echo "$$out" | kubectl delete --ignore-not-found=$(ignore-not-found) -f -; else echo "No CRDs to delete; skipping."; fi
-
-.PHONY: deploy
-deploy: manifests ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && { [ -f kustomization.yaml ] || $(KUSTOMIZE) create --autodetect; } && $(KUSTOMIZE) edit set image controller=$(IMG)
-	$(KUSTOMIZE) build config/default | kubectl apply -f -
-
-.PHONY: undeploy
-undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/default | kubectl delete --ignore-not-found=$(ignore-not-found) -f -
+# NOTE on deployment: there are deliberately no cluster-mutating
+# `install`/`deploy`/`undeploy` targets. Deployment ownership belongs to
+# the Helm chart (task 009) and the Kind harness (task 010), which
+# require an explicit kubeconfig/context; build-installer only renders
+# YAML into dist/ and never contacts a cluster.
 
 # Task-owned make fragments. make/helm.mk is owned by the Helm packaging task
 # and make/e2e.mk by the Kind harness task; they are included silently when

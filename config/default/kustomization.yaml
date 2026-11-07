@@ -32,20 +32,10 @@ resources:
 # Allow webhook traffic from all sources.
 #- ../network-policy
 
-# Uncomment the patches line if you enable Metrics
-patches:
-# [METRICS] The following patch will enable the metrics endpoint using HTTPS and the port :8443.
-# More info: https://book.kubebuilder.io/reference/metrics
-- path: manager_metrics_patch.yaml
-  target:
-    kind: Deployment
-
-# Uncomment the patches line if you enable Metrics and CertManager
-# [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.
-# This patch will protect the metrics with certManager self-signed certs.
-#- path: cert_metrics_manager_patch.yaml
-#  target:
-#    kind: Deployment
+# The manager Deployment carries the canonical runtime flags directly
+# (config/manager/manager.yaml): a positive metrics port, secure
+# serving, health probes, leader election and the disabled webhook
+# port. No patch layer rewrites the argument list.
 
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
 # crd/kustomization.yaml
