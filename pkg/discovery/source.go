@@ -161,9 +161,19 @@ func (i Identity) Validate() error {
 	return nil
 }
 
-// Facts are the minimal supported observations. Absent facts are omitted —
-// nil memory, empty strings — never zero or defaulted values.
+// Facts are the minimal supported observations, organized per device class
+// exactly like the HardwareDevice status: class-specific facts live in the
+// optional struct selected by the device's class (accelerator in this PoC),
+// and future classes arrive as new sibling structs. Absent facts are
+// omitted — nil memory, empty strings — never zero or defaulted values.
 type Facts struct {
+	// Accelerator carries accelerator-class facts; nil when no accelerator
+	// facts were observed.
+	Accelerator *AcceleratorFacts
+}
+
+// AcceleratorFacts are the observed facts of one whole accelerator (GPU).
+type AcceleratorFacts struct {
 	// Vendor is the device vendor when the source publishes it. Neither
 	// the PoC simulator ConfigMaps nor the NVIDIA DRA attributes carry
 	// vendor, so it is omitted in this PoC.
@@ -179,7 +189,10 @@ type Facts struct {
 // contract: a published memory must not be zero, and absent facts must be
 // omitted rather than defaulted.
 func (f Facts) Validate() error {
-	if f.Memory != nil && f.Memory.IsZero() {
+	if f.Accelerator == nil {
+		return nil
+	}
+	if f.Accelerator.Memory != nil && f.Accelerator.Memory.IsZero() {
 		return ErrZeroMemory
 	}
 	return nil

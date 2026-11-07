@@ -31,20 +31,23 @@ import (
 // controller; the status is written exclusively by the HardwareDevice
 // controller through the /status subresource.
 //
-// Additive extension policy (design doc §4.5): future facts are added as new
-// optional status fields (or optional structs with their own validation) and
-// new spec.class enum values; no placeholder empty structs, catch-all vendor
-// attribute maps, or speculative locators ship in v1alpha1.
+// Additive extension policy (design doc §4.5): per-class observed facts live
+// in optional status structs selected by the immutable spec.class (in this
+// PoC, only status.accelerator); future classes arrive as new sibling
+// structs plus new spec.class enum values, and cross-class facts stay at the
+// status top level. No placeholder empty structs, catch-all vendor attribute
+// maps, or speculative locators ship in v1alpha1.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster,path=hardwaredevices,shortName=hwdev;hw,categories=odh;platform;all
 // +kubebuilder:printcolumn:name="Class",type=string,JSONPath=`.spec.class`
-// +kubebuilder:printcolumn:name="Model",type=string,JSONPath=`.status.model`
-// +kubebuilder:printcolumn:name="Memory",type=string,JSONPath=`.status.memory`
+// +kubebuilder:printcolumn:name="Model",type=string,JSONPath=`.status.accelerator.model`
+// +kubebuilder:printcolumn:name="Memory",type=string,JSONPath=`.status.accelerator.memory`
 // +kubebuilder:printcolumn:name="Node",type=string,JSONPath=`.spec.host.name`
 // +kubebuilder:printcolumn:name="Plane",type=string,JSONPath=`.status.allocationPlane`
 // +kubebuilder:printcolumn:name="Collected",type=date,JSONPath=`.status.collectedAt`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:validation:XValidation:rule="!has(self.status.accelerator) || self.spec.class == 'accelerator'",message="status.accelerator is only valid when spec.class is accelerator"
 type HardwareDevice struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -178,24 +181,17 @@ type SimulatorSource struct {
 }
 
 // HardwareDeviceStatus is the observed state of one device, written only by
-// the HardwareDevice controller via the /status subresource. Optional facts
-// the source does not publish are omitted, never zero or defaulted.
+// the HardwareDevice controller via the /status subresource. Per-class facts
+// live in the optional struct selected by the immutable spec.class; optional
+// facts the source does not publish are omitted, never zero or defaulted.
 type HardwareDeviceStatus struct {
-	// vendor is the device vendor when the source publishes it. Neither the
-	// PoC simulator ConfigMaps nor the NVIDIA DRA attributes carry vendor,
-	// so it is omitted in this PoC.
+	// accelerator carries the observed facts of an accelerator-class device.
+	// It is present iff facts have been observed for a device whose
+	// spec.class is accelerator (enforced by CEL). Future device classes
+	// arrive as new sibling structs; class-specific facts never live at the
+	// status top level.
 	// +optional
-	Vendor string `json:"vendor,omitempty"`
-
-	// model is the observed device model (fake-gpu-operator gpuProduct or
-	// the DRA gpu.nvidia.com/productName attribute).
-	// +optional
-	Model string `json:"model,omitempty"`
-
-	// memory is the observed device memory as a Quantity in bytes when the
-	// source publishes it.
-	// +optional
-	Memory *resource.Quantity `json:"memory,omitempty"`
+	Accelerator *AcceleratorDeviceStatus `json:"accelerator,omitempty"`
 
 	// allocationPlane is the allocation plane that evidenced the device.
 	// +optional
@@ -225,6 +221,27 @@ type HardwareDeviceStatus struct {
 	// observed by the device controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+}
+
+// AcceleratorDeviceStatus carries the observed facts of one whole
+// accelerator (GPU). Optional facts the source does not publish are omitted,
+// never zero or defaulted.
+type AcceleratorDeviceStatus struct {
+	// vendor is the device vendor when the source publishes it. Neither the
+	// PoC simulator ConfigMaps nor the NVIDIA DRA attributes carry vendor,
+	// so it is omitted in this PoC.
+	// +optional
+	Vendor string `json:"vendor,omitempty"`
+
+	// model is the observed device model (fake-gpu-operator gpuProduct or
+	// the DRA gpu.nvidia.com/productName attribute).
+	// +optional
+	Model string `json:"model,omitempty"`
+
+	// memory is the observed device memory as a Quantity in bytes when the
+	// source publishes it.
+	// +optional
+	Memory *resource.Quantity `json:"memory,omitempty"`
 }
 
 // +kubebuilder:object:root=true

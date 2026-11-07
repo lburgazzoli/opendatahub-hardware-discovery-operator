@@ -1,7 +1,16 @@
 # Hardware discovery service — PoC execution contract (proposal)
 
-Status: **APPROVED — task 001 gate passed 2026-11-06.**
+Status: **APPROVED — task 001 gate passed 2026-11-06; amended 2026-11-07.**
 Date: 2026-11-06. Author: task 001 executor.
+
+Amendment (2026-11-07, user-directed): HardwareDevice status uses a per-class
+facts struct — `status.accelerator{vendor, model, memory}` — selected by the
+immutable `spec.class` instead of flat accelerator-flavored top-level fields;
+`pkg/discovery.Facts` mirrors the union (`Facts.Accelerator`). No status-side
+class discriminator. Rationale: flat `status.memory` is accelerator-specific
+and would be a breaking move when the `network` class arrives; the change was
+made before any status-writing controller or consumer existed. Recorded in
+the execution ledger.
 
 This document is the approved concrete PoC contract governing all service
 implementation (tasks 002+). The human approved it as proposed on 2026-11-06
@@ -139,9 +148,10 @@ simulator's private details (ConfigMap names, YAML keys) exist only in
 
 | JSON path | Type | Notes |
 |---|---|---|
-| `status.vendor` | string | omitted when the source does not publish it (PoC: neither FGO CMs nor NVIDIA DRA attributes carry vendor — omitted, never defaulted) |
-| `status.model` | string | FGO `gpuProduct` / DRA `gpu.nvidia.com/productName` |
-| `status.memory` | `resource.Quantity` | pattern `^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$`; FGO MiB → bytes, BinarySI |
+| `status.accelerator` | object | per-class facts struct, present iff facts observed for a `spec.class: accelerator` device (root CEL: `!has(self.status.accelerator) \|\| self.spec.class == 'accelerator'`); future classes arrive as sibling structs — class-specific facts never live at the status top level |
+| `status.accelerator.vendor` | string | omitted when the source does not publish it (PoC: neither FGO CMs nor NVIDIA DRA attributes carry vendor — omitted, never defaulted) |
+| `status.accelerator.model` | string | FGO `gpuProduct` / DRA `gpu.nvidia.com/productName` |
+| `status.accelerator.memory` | `resource.Quantity` | pattern `^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$`; FGO MiB → bytes, BinarySI |
 | `status.allocationPlane` | string, enum `[classic, dra]` | which plane evidenced the device |
 | `status.collectedAt` | `metav1.Time` | collector observation clock; never copied from the producer |
 | `status.sourceRef` | string | provenance, e.g. `dra/gpu.nvidia.com/<pool>` or `simulator/<ns>/<cm>`; replaced, not merged, on observed source change |
@@ -149,10 +159,13 @@ simulator's private details (ConfigMap names, YAML keys) exist only in
 | `status.observedGeneration` | int64 | |
 
 Optional unknown facts are omitted — no zero/defaulted facts, no placeholder
-structs, no vendor attribute bag.
+structs, no vendor attribute bag. There is **no status-side class
+discriminator**: `spec.class` is immutable (CEL) and therefore *is* the
+discriminator selecting the per-class facts struct; duplicating it into
+status would only invite drift.
 
-Printer columns: `Class` (.spec.class), `Model` (.status.model), `Memory`
-(.status.memory), `Node` (.spec.host.name), `Plane`
+Printer columns: `Class` (.spec.class), `Model` (.status.accelerator.model),
+`Memory` (.status.accelerator.memory), `Node` (.spec.host.name), `Plane`
 (.status.allocationPlane), `Collected` (.status.collectedAt), `Age`.
 
 ### 4.3 Example CR
@@ -185,8 +198,9 @@ spec:
       pool: gpu-node-a
       device: gpu-11111111-2222-3333-4444-555555555555
 status:
-  model: Tesla-K80
-  memory: 12635713536
+  accelerator:
+    model: Tesla-K80
+    memory: 12635713536
   allocationPlane: dra
   collectedAt: "2026-11-06T15:32:31Z"
   sourceRef: dra/gpu.nvidia.com/gpu-node-a
@@ -223,10 +237,12 @@ status:
 ### 4.5 Additive extension path (no placeholders now)
 
 Future optional facts (PCIe/NUMA location, MIG geometry, relations, vendor
-attributes) are added as new *optional* status fields or optional structs
-with their own validation, plus new enum values for `spec.class`. Because
-every current field is required-and-validated or explicitly optional with
-`omitempty`, additions are non-breaking; no empty bag/map ships in v1alpha1.
+attributes) are added as new *optional* fields inside the per-class status
+struct with their own validation, plus new enum values for `spec.class` and
+new sibling class structs (e.g. a future `status.network`) gated by the same
+root CEL presence rule. Because every current field is
+required-and-validated or explicitly optional with `omitempty`, additions
+are non-breaking; no empty bag/map ships in v1alpha1.
 A future PCI identity locator would extend the `spec.source` union — the CEL
 "exactly one" rule is written as `oneOf`-style counting so adding a third
 arm is a reviewed schema change, not a silent reopening.
@@ -440,8 +456,12 @@ type Identity struct {
     Locator  Locator
 }
 
-// Facts are the minimal supported observations; absent = omitted, never zero.
+// Facts are the minimal supported observations, organized per device class
+// exactly like the HardwareDevice status; absent = omitted, never zero.
 type Facts struct {
+    Accelerator *AcceleratorFacts // nil when no accelerator facts observed
+}
+type AcceleratorFacts struct {
     Vendor string            // optional, omitted when unsupported
     Model  string
     Memory *resource.Quantity
@@ -472,10 +492,11 @@ type Source interface {
 }
 ```
 
-Mapping into status: `Facts` → `status.{vendor,model,memory}`, `Plane` →
-`status.allocationPlane`, `CollectedAt` → `status.collectedAt`,
-`Source.ID()`+locator → `status.sourceRef`. No downstream executor may
-change this representation without a re-approved contract change.
+Mapping into status: `Facts.Accelerator` → `status.accelerator` (vendor,
+model, memory), `Plane` → `status.allocationPlane`, `CollectedAt` →
+`status.collectedAt`, `Source.ID()`+locator → `status.sourceRef`. No
+downstream executor may change this representation without a re-approved
+contract change.
 
 ---
 

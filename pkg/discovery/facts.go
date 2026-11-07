@@ -16,20 +16,31 @@ limitations under the License.
 
 package discovery
 
-// Equal reports whether f and other carry the same facts: vendor, model
-// and memory. Memory compares numerically with Quantity.Equal, so equal
-// values in different formats are equal, while an absent fact (nil) is
-// distinct from a zero quantity: optional facts are omitted, never zero.
-// The comparison never mutates the caller-owned Quantity values.
+// Equal reports whether f and other carry the same facts. The comparison
+// walks the per-class fact structs; in this PoC only accelerator facts
+// exist. Memory compares numerically with Quantity.Equal, so equal values
+// in different formats are equal, while an absent fact (nil) is distinct
+// from a zero quantity: optional facts are omitted, never zero. The
+// comparison never mutates the caller-owned Quantity values.
 func (f Facts) Equal(other Facts) bool {
-	if f.Vendor != other.Vendor || f.Model != other.Model {
+	switch {
+	case f.Accelerator == nil || other.Accelerator == nil:
+		return f.Accelerator == other.Accelerator
+	default:
+		return f.Accelerator.Equal(*other.Accelerator)
+	}
+}
+
+// Equal reports whether a and b carry the same accelerator facts.
+func (a AcceleratorFacts) Equal(b AcceleratorFacts) bool {
+	if a.Vendor != b.Vendor || a.Model != b.Model {
 		return false
 	}
 	switch {
-	case f.Memory == nil || other.Memory == nil:
-		return f.Memory == other.Memory
+	case a.Memory == nil || b.Memory == nil:
+		return a.Memory == b.Memory
 	default:
-		return f.Memory.Equal(*other.Memory)
+		return a.Memory.Equal(*b.Memory)
 	}
 }
 

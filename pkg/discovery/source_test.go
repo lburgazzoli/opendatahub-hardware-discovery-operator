@@ -98,12 +98,14 @@ func TestFactsValidate(t *testing.T) {
 
 	// Absent facts are omitted: all-absent is a valid, empty observation.
 	g.Expect(discovery.Facts{}.Validate()).To(Succeed())
-	g.Expect(discovery.Facts{Model: teslaK80}.Validate()).To(Succeed())
-	g.Expect(discovery.Facts{Memory: quantity("12635713536")}.Validate()).To(Succeed())
+	g.Expect(accelFacts(discovery.AcceleratorFacts{Model: teslaK80}).Validate()).To(Succeed())
+	g.Expect(accelFacts(discovery.AcceleratorFacts{Memory: quantity("12635713536")}).Validate()).To(Succeed())
 
 	// A published memory of zero violates absent-never-zero.
-	g.Expect(errors.Is(discovery.Facts{Memory: quantity("0")}.Validate(), discovery.ErrZeroMemory)).To(BeTrue())
-	g.Expect(errors.Is(discovery.Facts{Memory: quantity("0Gi")}.Validate(), discovery.ErrZeroMemory)).To(BeTrue())
+	zero := accelFacts(discovery.AcceleratorFacts{Memory: quantity("0")})
+	g.Expect(errors.Is(zero.Validate(), discovery.ErrZeroMemory)).To(BeTrue())
+	zeroGi := accelFacts(discovery.AcceleratorFacts{Memory: quantity("0Gi")})
+	g.Expect(errors.Is(zeroGi.Validate(), discovery.ErrZeroMemory)).To(BeTrue())
 }
 
 func TestEnumerationValidate(t *testing.T) {
@@ -166,7 +168,7 @@ func TestObservationValidate(t *testing.T) {
 	stamped := time.Date(2026, 11, 6, 15, 32, 31, 0, time.UTC)
 	observation := discovery.Observation{
 		Identity:    validIdentity(),
-		Facts:       discovery.Facts{Model: teslaK80, Memory: quantity("12635713536")},
+		Facts:       accelFacts(discovery.AcceleratorFacts{Model: teslaK80, Memory: quantity("12635713536")}),
 		CollectedAt: stamped,
 	}
 	g.Expect(observation.Validate()).To(Succeed())
@@ -176,7 +178,7 @@ func TestObservationValidate(t *testing.T) {
 	g.Expect(errors.Is(unstamped.Validate(), discovery.ErrUnstampedObservation)).To(BeTrue())
 
 	zeroMemory := observation
-	zeroMemory.Facts.Memory = quantity("0")
+	zeroMemory.Facts.Accelerator.Memory = quantity("0")
 	g.Expect(errors.Is(zeroMemory.Validate(), discovery.ErrZeroMemory)).To(BeTrue())
 
 	noIdentity := observation
@@ -227,7 +229,7 @@ func (s *recordingSource) Observe(
 	s.observed = append(s.observed, id)
 	return discovery.Observation{
 		Identity:    id,
-		Facts:       discovery.Facts{Model: teslaK80, Memory: quantity("12635713536")},
+		Facts:       accelFacts(discovery.AcceleratorFacts{Model: teslaK80, Memory: quantity("12635713536")}),
 		CollectedAt: time.Date(2026, 11, 6, 15, 32, 31, 0, time.UTC),
 	}, nil
 }
@@ -251,7 +253,7 @@ func TestSourceContractUsage(t *testing.T) {
 	observation, err := source.Observe(context.Background(), enumeration.Identities[0])
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(observation.Validate()).To(Succeed())
-	g.Expect(observation.Facts.Model).To(Equal(teslaK80))
+	g.Expect(observation.Facts.Accelerator.Model).To(Equal(teslaK80))
 
 	// A cancelled context is a hard failure outside the classification:
 	// callers treat it as unknown too.
