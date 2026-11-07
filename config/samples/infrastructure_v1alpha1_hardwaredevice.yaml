@@ -6,6 +6,12 @@
 # hardwarediscovery.platform.opendatahub.io/ device-class and node labels.
 # This sample illustrates the spec shape only; applying it by hand does not
 # reproduce controller ownership.
+#
+# identity.kind distinguishes real vendor identity (uuid, published by the
+# DRA source) from the classic source's synthetic node-scoped identity
+# (nodeIndex, <node-name>-gpu-<index>). The sample below is a DRA-discovered
+# device; a classic device carries source.kind: classic with a node+index
+# locator instead.
 apiVersion: infrastructure.platform.opendatahub.io/v1alpha1
 kind: HardwareDevice
 metadata:
@@ -13,11 +19,13 @@ metadata:
 spec:
   class: accelerator
   identity:
-    id: GPU-11111111-2222-3333-4444-555555555555
+    kind: uuid
+    id: gpu-11111111-2222-3333-4444-555555555555
   host:
     name: gpu-node-a
     uid: 11111111-1111-1111-1111-111111111111
   source:
+    kind: dra
     dra:
       driver: gpu.nvidia.com
       pool: gpu-node-a

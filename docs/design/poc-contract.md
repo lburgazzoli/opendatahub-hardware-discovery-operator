@@ -89,16 +89,6 @@ global default. The event recorder is obtained as
 anticipates the future ODH-operator module integration consuming the
 same framework. Recorded in the execution ledger.
 
-> **Implementation stage note (updated through task 016):** as of
-> Amendment 4's schema commit, the APIs, generated CRDs and controller
-> condition helpers carry the framework contract. The inventory
-> controller now registers through the framework builder
-> (`ReconcilerFor → ReconcilerBuilder → Build`, task 016) with
-> per-kind scan serialization via manager `Controller` options; the
-> device controller still runs its native registration until its
-> migration task (015), and the runtime's `framework/manager.New`
-> wrapper lands in the manager task (008).
-
 This document is the approved concrete PoC contract governing all service
 implementation (tasks 002+). The human approved it as proposed on 2026-11-06
 in the execution session, resolving the gate choices as recorded in §1 —

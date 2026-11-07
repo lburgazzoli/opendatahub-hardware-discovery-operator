@@ -112,3 +112,45 @@ split from a combined reference.
 - Regeneration is deterministic: `make helm-chart` is idempotent and
   `make helm-review-chart` fails on any drift between the regenerated
   chart and the committed reviewed one.
+
+## End-to-end testing (tasks 010/011)
+
+The e2e harness is a build-tagged suite (`test/e2e`, tag `e2e`) that
+creates its own run-owned Kind clusters with private kubeconfigs under
+`/tmp` — it never touches the ambient kubeconfig — and installs the
+simulator plus the reviewed chart with a locally built controller image
+loaded as cargo (no registry push or pull).
+
+Targets (defined in `make/e2e.mk`):
+
+```sh
+make e2e-image           # build the controller image into the runtime
+make demo                # TestHardwareDiscoveryDemonstration (both profiles)
+make test-e2e            # full gate: demonstration + harness verification
+make test-e2e-compile    # cluster-free: compile/vet the e2e-tagged suite
+```
+
+Environment:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `E2E_RUNTIME` | `CONTAINER_TOOL` (podman) | container runtime backing the run-owned Kind clusters; `docker` is the accepted override |
+| `E2E_CONTROLLER_IMAGE_REPOSITORY` | `localhost/opendatahub-hardware-discovery-operator` | image repository loaded into each cluster |
+| `E2E_CONTROLLER_IMAGE_TAG` | `e2e` | image tag |
+| `E2E_TIMEOUT` | `120m` | go test timeout |
+
+The suite fails deterministically — never skips — when the runtime or
+image is missing. All run-owned Kind clusters are created with the
+containerd `privileged_without_host_devices = true` patch on runc: kind
+nodes otherwise inherit the host's `/dev` including volatile USB device
+nodes, whose re-enumeration breaks privileged pod create inside the node
+(host-hermetic by intent; neither the simulator nor the service needs
+host devices).
+
+Evidence and diagnostics land under `dist/e2e/` (gitignored): one YAML
+evidence document per profile run with server version, nodes, devices,
+facts, conditions and source snapshots. On failure the harness collects
+events, pod and node logs under `/tmp` for the exact run-owned cluster
+and tears only that cluster down. The scenario catalog, the
+incarnation-convergence race narrative and the executed results are in
+[`testing.md`](testing.md).

@@ -1,10 +1,13 @@
 # Example HardwareDiscovery singleton (design doc §5.3).
 #
 # The instance name must be exactly "cluster"; the root-schema CEL rule
-# rejects any other name. This example matches the classic simulator profile:
-# the simulator source is enabled and points at the fake-gpu-operator
-# namespace. For the DRA profile, set spec.sources.simulator.enabled to
-# false (or omit the simulator block) and leave the DRA source enabled.
+# rejects any other name. Both sources are enabled by default; a nil or
+# omitted arm means enabled (evidence-gated), so this minimal example is
+# the complete configuration — no source block is required at all.
+#
+# This example matches the demonstration's node pool. The DRA source reads
+# native resource.k8s.io/v1 ResourceSlices of the allow-listed drivers; the
+# classic source reads node extended resources plus GFD-style labels.
 apiVersion: infrastructure.platform.opendatahub.io/v1alpha1
 kind: HardwareDiscovery
 metadata:
@@ -22,6 +25,6 @@ spec:
       enabled: true
       driverAllowList:
       - gpu.nvidia.com
-    simulator:
+    classic:
       enabled: true
-      namespace: gpu-operator
+      resourceName: nvidia.com/gpu
