@@ -103,24 +103,37 @@ func newKindProvider(runtime Runtime) (Provider, error) {
 var _ Provider = (*kindProvider)(nil)
 
 func (p *kindProvider) Create(spec Spec) error {
+	// The v1alpha4 cluster config is always used: it carries the node
+	// image (single source of truth), optional control-plane feature
+	// gates, and the containerd patch below.
+	//
+	// privileged_without_host_devices stops containerd from injecting
+	// every node device into privileged containers. Kind nodes inherit
+	// the host /dev, including volatile entries such as USB bus devices;
+	// when one re-enumerates away mid-run, creating any privileged pod
+	// (the DRA simulator's kubelet plugin) fails at OCI create on the
+	// stale bind mount. The simulator and the service never need host
+	// devices, so the hermetic setting is also the honest one.
+	cfg := &v1alpha4.Cluster{
+		Name:  spec.Name,
+		Nodes: []v1alpha4.Node{{Role: v1alpha4.ControlPlaneRole, Image: spec.NodeImage}},
+		ContainerdConfigPatches: []string{
+			`[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+	privileged_without_host_devices = true`,
+		},
+	}
+	if len(spec.FeatureGates) > 0 {
+		// Feature gates reach the control-plane components through the
+		// cluster config (kind's top-level featureGates map is applied
+		// to kube-apiserver, kube-controller-manager and
+		// kube-scheduler).
+		cfg.FeatureGates = spec.FeatureGates
+	}
+
 	createOptions := []kindcluster.CreateOption{
 		kindcluster.CreateWithKubeconfigPath(spec.KubeconfigPath),
 		kindcluster.CreateWithWaitForReady(spec.WaitForReady),
-	}
-
-	if len(spec.FeatureGates) > 0 {
-		// Feature gates reach the control-plane components through a
-		// v1alpha4 cluster config (kind's top-level featureGates map is
-		// applied to kube-apiserver, kube-controller-manager and
-		// kube-scheduler). The node image is set on the config's node so
-		// the config stays the single source of truth.
-		createOptions = append(createOptions, kindcluster.CreateWithV1Alpha4Config(&v1alpha4.Cluster{
-			Name:         spec.Name,
-			FeatureGates: spec.FeatureGates,
-			Nodes:        []v1alpha4.Node{{Role: v1alpha4.ControlPlaneRole, Image: spec.NodeImage}},
-		}))
-	} else {
-		createOptions = append(createOptions, kindcluster.CreateWithNodeImage(spec.NodeImage))
+		kindcluster.CreateWithV1Alpha4Config(cfg),
 	}
 
 	return p.provider.Create(spec.Name, createOptions...)

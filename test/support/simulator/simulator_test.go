@@ -646,3 +646,57 @@ func readFile(_ *testing.T, dir, name string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(dir, name))
 	return string(data), err
 }
+
+func TestSetPoolSliceCount(t *testing.T) {
+	g := NewWithT(t)
+	cli := newFakeClient(
+		&resourcev1.ResourceSlice{
+			ObjectMeta: metav1.ObjectMeta{Name: "pool-a-x"},
+			Spec: resourcev1.ResourceSliceSpec{
+				Driver: DRADriver,
+				Pool:   resourcev1.ResourcePool{Name: testNodeName, Generation: 1, ResourceSliceCount: 2},
+			},
+		},
+		&resourcev1.ResourceSlice{
+			ObjectMeta: metav1.ObjectMeta{Name: "pool-a-y"},
+			Spec: resourcev1.ResourceSliceSpec{
+				Driver: DRADriver,
+				Pool:   resourcev1.ResourcePool{Name: testNodeName, Generation: 1, ResourceSliceCount: 2},
+			},
+		},
+		&resourcev1.ResourceSlice{
+			ObjectMeta: metav1.ObjectMeta{Name: "foreign"},
+			Spec: resourcev1.ResourceSliceSpec{
+				Driver: "example.com/other",
+				Pool:   resourcev1.ResourcePool{Name: "other-pool", Generation: 1, ResourceSliceCount: 1},
+			},
+		},
+	)
+
+	g.Expect(SetPoolSliceCount(context.Background(), cli, DRADriver, testNodeName, 3)).To(Succeed())
+
+	for _, name := range []string{"pool-a-x", "pool-a-y"} {
+		slice := &resourcev1.ResourceSlice{}
+		g.Expect(cli.Get(context.Background(), client.ObjectKey{Name: name}, slice)).To(Succeed())
+		g.Expect(slice.Spec.Pool.ResourceSliceCount).To(Equal(int64(3)), "slice %s", name)
+	}
+
+	foreign := &resourcev1.ResourceSlice{}
+	g.Expect(cli.Get(context.Background(), client.ObjectKey{Name: "foreign"}, foreign)).To(Succeed())
+	g.Expect(foreign.Spec.Pool.ResourceSliceCount).To(Equal(int64(1)), "slices of other pools stay untouched")
+}
+
+func TestSetPoolSliceCountUnknownPoolFails(t *testing.T) {
+	g := NewWithT(t)
+	cli := newFakeClient(&resourcev1.ResourceSlice{
+		ObjectMeta: metav1.ObjectMeta{Name: testSliceName},
+		Spec: resourcev1.ResourceSliceSpec{
+			Driver: DRADriver,
+			Pool:   resourcev1.ResourcePool{Name: testNodeName, Generation: 1, ResourceSliceCount: 1},
+		},
+	})
+
+	err := SetPoolSliceCount(context.Background(), cli, DRADriver, "absent-pool", 2)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("absent-pool"))
+}

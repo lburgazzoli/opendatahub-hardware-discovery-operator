@@ -21,9 +21,49 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	resourcev1 "k8s.io/api/resource/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 )
+
+// SetPoolSliceCount rewrites spec.resourceSliceCount on every published
+// ResourceSlice of one driver/pool (the task-011 incomplete-pool
+// regression).
+//
+// A pool snapshot is complete when the number of slices carrying the
+// pool's generation satisfies the declared resourceSliceCount, so setting
+// a count above the number of published slices makes the snapshot
+// incomplete for every reader — including the service's DRA source —
+// while the input stays stable: the FGO plugin republishes only at
+// startup, so no restart may happen while the mutation is in effect.
+// Restoring is the caller's responsibility: capture the original count
+// before mutating (for example from the current snapshot's first slice)
+// and set it back to recover.
+func SetPoolSliceCount(ctx context.Context, cli client.Client, driver, pool string, count int64) error {
+	collection, err := ListResourceSlices(ctx, cli)
+	if err != nil {
+		return fmt.Errorf("listing resource slices: %w", err)
+	}
+
+	targets := make([]resourcev1.ResourceSlice, 0, len(collection))
+	for i := range collection {
+		if collection[i].Spec.Driver == driver && collection[i].Spec.Pool.Name == pool {
+			targets = append(targets, collection[i])
+		}
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("no resource slices found for driver %q pool %q", driver, pool)
+	}
+
+	for i := range targets {
+		slice := &targets[i]
+		slice.Spec.Pool.ResourceSliceCount = count
+		if err := cli.Update(ctx, slice); err != nil {
+			return fmt.Errorf("updating resource slice %s: %w", slice.Name, err)
+		}
+	}
+	return nil
+}
 
 // MutateNodeTopology edits one node's topology input ConfigMap in place.
 //

@@ -2,10 +2,17 @@
 # Ignore everything by default and re-include only needed files
 **
 
-# Re-include Go source files (but not *_test.go)
-# If you use Podman, re-include your source directories by name,
-# such as !cmd, !api, and !internal.
+# Re-include the Go source trees by name: Podman/buildah do not
+# recreate excluded directories from file patterns alone, so
+# !**/*.go without these leaves the build context without cmd/,
+# api/, internal/ and pkg/ (see the buildah issue referenced below).
 # See https://github.com/containers/buildah/issues/6417
+!api
+!cmd
+!internal
+!pkg
+
+# Re-include Go source files (but not *_test.go)
 !**/*.go
 **/*_test.go
 
