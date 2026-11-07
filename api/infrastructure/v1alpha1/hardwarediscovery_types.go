@@ -55,9 +55,8 @@ type HardwareDiscoverySpec struct {
 	// class is the device class this singleton discovers. accelerator is
 	// the only class in this PoC; new values are additive, reviewed schema
 	// changes.
-	// +kubebuilder:validation:Enum=accelerator
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="class is immutable"
-	Class string `json:"class"`
+	Class DeviceClass `json:"class"`
 
 	// nodeSelector selects the nodes whose devices are discovered. An
 	// omitted or empty selector matches all eligible nodes.
@@ -173,6 +172,23 @@ func (s *HardwareDiscovery) SetConditions(conditions []fwapi.Condition) {
 	s.Status.SetConditions(conditions)
 }
 
+// DiscoveryOutcome is whether an enumeration of a node was an
+// authoritative snapshot (Success, possibly empty) or unknown (Unknown:
+// error, missing API, forbidden, or incomplete pool). The schema closes
+// the set; new values are additive, reviewed schema changes.
+// +kubebuilder:validation:Enum=Success;Unknown
+type DiscoveryOutcome string
+
+const (
+	// DiscoveryOutcomeSuccess is an authoritative snapshot; it may be
+	// empty.
+	DiscoveryOutcomeSuccess DiscoveryOutcome = "Success"
+
+	// DiscoveryOutcomeUnknown is a non-authoritative snapshot: error,
+	// missing API, forbidden, or incomplete pool.
+	DiscoveryOutcomeUnknown DiscoveryOutcome = "Unknown"
+)
+
 // NodeSummary is the per-node inventory overview of one selected node.
 type NodeSummary struct {
 	// name is the Node name.
@@ -189,8 +205,7 @@ type NodeSummary struct {
 	// plane is the allocation plane that claimed the node, omitted when
 	// unknown.
 	// +optional
-	// +kubebuilder:validation:Enum=classic;dra
-	Plane string `json:"plane,omitempty"`
+	Plane AllocationPlane `json:"plane,omitempty"`
 
 	// deviceCount is the number of the service's owned HardwareDevice
 	// objects for this node.
@@ -200,8 +215,7 @@ type NodeSummary struct {
 	// outcome is whether the last enumeration of this node was an
 	// authoritative snapshot (Success, possibly empty) or unknown
 	// (Unknown: error, missing API, forbidden, or incomplete pool).
-	// +kubebuilder:validation:Enum=Success;Unknown
-	Outcome string `json:"outcome"`
+	Outcome DiscoveryOutcome `json:"outcome"`
 }
 
 // +kubebuilder:object:root=true

@@ -546,7 +546,7 @@ func seedDevice(
 			Name:       name,
 			UID:        types.UID("device-" + name),
 			Generation: 1,
-			Labels:     discovery.DeviceLabels(spec.Class, spec.Host.Name),
+			Labels:     discovery.DeviceLabels(string(spec.Class), spec.Host.Name),
 		},
 		Spec: spec,
 	}

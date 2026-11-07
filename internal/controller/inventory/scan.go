@@ -62,7 +62,7 @@ func (s *scanner) now() time.Time {
 
 // config is the validated singleton configuration of one scan.
 type config struct {
-	class        string
+	class        infrastructurev1alpha1.DeviceClass
 	selector     labels.Selector
 	sources      discovery.Sources
 	rescanPeriod time.Duration
@@ -78,8 +78,9 @@ func (s *scanner) evaluateConfig(single *infrastructurev1alpha1.HardwareDiscover
 		rescanPeriod: durationOr(single.Spec.RescanPeriod.Duration, defaultRescanPeriod),
 		gracePeriod:  durationOr(single.Spec.NodeGracePeriod.Duration, defaultNodeGracePeriod),
 	}
-	if single.Spec.Class != classAccelerator {
-		return cfg, fmt.Errorf("spec.class %q is not the enabled device class %q", single.Spec.Class, classAccelerator)
+	if single.Spec.Class != infrastructurev1alpha1.DeviceClassAccelerator {
+		return cfg, fmt.Errorf("spec.class %q is not the enabled device class %q",
+			single.Spec.Class, infrastructurev1alpha1.DeviceClassAccelerator)
 	}
 	cfg.class = single.Spec.Class
 
@@ -419,7 +420,7 @@ func (s *scanner) prune(
 				// and an unclaimed node's empty slice is never
 				// disappearance proof for source kinds whose claim rule
 				// differs from their zero-proof (classic).
-				if isResult && sourceAuthoritativelyEmpty(res, device.Spec.Source.Kind) {
+				if isResult && sourceAuthoritativelyEmpty(res, string(device.Spec.Source.Kind)) {
 					prunes = append(prunes, pruneAction{device, "authoritative disappearance"})
 				}
 				continue

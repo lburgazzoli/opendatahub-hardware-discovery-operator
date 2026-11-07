@@ -93,7 +93,7 @@ func TestCodec(t *testing.T) {
 
 	locator := classic.Locator{Node: nodeName, Index: 2}
 	src := locator.DeviceSource()
-	g.Expect(src.Kind).To(Equal("classic"))
+	g.Expect(string(src.Kind)).To(Equal("classic"))
 	g.Expect(src.Classic).NotTo(BeNil())
 	g.Expect(src.Classic.Node).To(Equal(nodeName))
 	g.Expect(src.Classic.Index).To(Equal(int32(2)))

@@ -378,7 +378,7 @@ func seedDevice(
 			Name: name,
 			UID:  types.UID("device-" + name),
 			Labels: map[string]string{
-				deviceClassLabel: spec.Class,
+				deviceClassLabel: string(spec.Class),
 				nodeLabel:        spec.Host.Name,
 			},
 		},

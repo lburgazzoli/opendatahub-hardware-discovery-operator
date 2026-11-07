@@ -116,7 +116,7 @@ func (f *fixture) devicesByName(t *testing.T) []infrastructurev1alpha1.HardwareD
 // seedDeviceStatus stamps device-controller-written status on the named
 // device, so retention proves the whole object — spec, labels and
 // status — is preserved untouched.
-func (f *fixture) seedDeviceStatus(t *testing.T, name string, plane string) {
+func (f *fixture) seedDeviceStatus(t *testing.T, name string, plane infrastructurev1alpha1.AllocationPlane) {
 	t.Helper()
 	device := f.getDevice(t, name)
 	device.Status = infrastructurev1alpha1.HardwareDeviceStatus{

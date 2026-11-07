@@ -27,7 +27,7 @@ import (
 // and the API arm, so the controllers never interpret locator internals.
 func (l Locator) DeviceSource() v1alpha1.DeviceSource {
 	return v1alpha1.DeviceSource{
-		Kind: SourceID,
+		Kind: v1alpha1.DeviceSourceKindClassic,
 		Classic: &v1alpha1.ClassicSource{
 			Node:  l.Node,
 			Index: l.Index,
@@ -39,7 +39,7 @@ func (l Locator) DeviceSource() v1alpha1.DeviceSource {
 // value. It rejects sources of other kinds and invalid classic arms
 // instead of guessing.
 func LocatorFromDeviceSource(src v1alpha1.DeviceSource) (Locator, error) {
-	if src.Kind != SourceID || src.Classic == nil {
+	if src.Kind != v1alpha1.DeviceSourceKindClassic || src.Classic == nil {
 		return Locator{}, fmt.Errorf("classic: spec.source is not a %s locator (kind %q)", SourceID, src.Kind)
 	}
 	locator := Locator{Node: src.Classic.Node, Index: src.Classic.Index}

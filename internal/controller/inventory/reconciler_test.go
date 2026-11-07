@@ -217,7 +217,7 @@ func TestReconcilePruneDecisions(t *testing.T) {
 		expectDeleted bool
 		expectCount   int32
 		expectReason  string
-		expectOutcome string
+		expectOutcome infrastructurev1alpha1.DiscoveryOutcome
 	}{
 		{
 			name:          "authoritative empty prunes the child",

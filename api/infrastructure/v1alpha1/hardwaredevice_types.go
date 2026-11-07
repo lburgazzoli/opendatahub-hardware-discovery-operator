@@ -66,6 +66,50 @@ type HardwareDevice struct {
 	Status HardwareDeviceStatus `json:"status,omitzero"`
 }
 
+// DeviceClass is the device class of a discovery inventory entry: it
+// selects which per-class status facts and source semantics apply. The
+// schema closes the set; new values are additive, reviewed schema
+// changes.
+// +kubebuilder:validation:Enum=accelerator
+type DeviceClass string
+
+const (
+	// DeviceClassAccelerator is the whole-GPU accelerator class, the only
+	// class enabled in this PoC.
+	DeviceClassAccelerator DeviceClass = "accelerator"
+)
+
+// DeviceIdentityKind is the nature of a device identity: a real vendor
+// identity or a synthetic node-scoped one. The schema closes the set;
+// new values are additive, reviewed schema changes.
+// +kubebuilder:validation:Enum=uuid;nodeIndex
+type DeviceIdentityKind string
+
+const (
+	// DeviceIdentityKindUUID is a real vendor device identity (for NVIDIA
+	// GPUs, the GPU UUID published by DRA).
+	DeviceIdentityKindUUID DeviceIdentityKind = "uuid"
+
+	// DeviceIdentityKindNodeIndex is a synthetic, node-scoped identity
+	// derived from the node name and the device index within the node
+	// (classic labels source).
+	DeviceIdentityKindNodeIndex DeviceIdentityKind = "nodeIndex"
+)
+
+// DeviceSourceKind is the registered source kind that owns a device
+// locator arm. The schema closes the set; new values are additive,
+// reviewed schema changes.
+// +kubebuilder:validation:Enum=dra;classic
+type DeviceSourceKind string
+
+const (
+	// DeviceSourceKindDRA is the stable resource.k8s.io source.
+	DeviceSourceKindDRA DeviceSourceKind = "dra"
+
+	// DeviceSourceKindClassic is the classic labels source.
+	DeviceSourceKindClassic DeviceSourceKind = "classic"
+)
+
 // HardwareDeviceSpec is the identity and locator contract of one device.
 // It is owned by the HardwareDiscovery singleton controller.
 // +kubebuilder:validation:XValidation:rule="(has(self.source.dra) ? 1 : 0) + (has(self.source.classic) ? 1 : 0) == 1",message="exactly one source locator (dra or classic) is required"
@@ -75,9 +119,8 @@ type HardwareDeviceSpec struct {
 	// class is the device class this inventory entry belongs to.
 	// accelerator is the only class in this PoC; new values are additive,
 	// reviewed schema changes.
-	// +kubebuilder:validation:Enum=accelerator
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="class is immutable"
-	Class string `json:"class"`
+	Class DeviceClass `json:"class"`
 
 	// identity is the immutable device identity.
 	// +required
@@ -103,9 +146,8 @@ type DeviceIdentity struct {
 	// device index within the node (classic labels source). A nodeIndex
 	// identity is stable only for the node incarnation and is not joinable
 	// with telemetry or vendor tooling.
-	// +kubebuilder:validation:Enum=uuid;nodeIndex
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="identity.kind is immutable"
-	Kind string `json:"kind"`
+	Kind DeviceIdentityKind `json:"kind"`
 
 	// id is the device ID: the vendor device ID (GPU UUID) for kind uuid,
 	// or the deterministic <node-name>-gpu-<index> for kind nodeIndex
@@ -143,8 +185,7 @@ type DeviceHost struct {
 type DeviceSource struct {
 	// kind is the registered source kind that owns the locator arm. It must
 	// match the set arm (enforced by CEL).
-	// +kubebuilder:validation:Enum=dra;classic
-	Kind string `json:"kind"`
+	Kind DeviceSourceKind `json:"kind"`
 
 	// dra locates the device in a stable resource.k8s.io/v1 ResourceSlice
 	// advertisement. The enforced driver allow-list is the singleton's
@@ -196,6 +237,21 @@ type ClassicSource struct {
 	Index int32 `json:"index"`
 }
 
+// AllocationPlane is the allocation plane that evidenced a device or
+// claimed a node. The schema closes the set; new values are additive,
+// reviewed schema changes.
+// +kubebuilder:validation:Enum=classic;dra
+type AllocationPlane string
+
+const (
+	// AllocationPlaneClassic is the classic device-plugin allocation
+	// plane.
+	AllocationPlaneClassic AllocationPlane = "classic"
+
+	// AllocationPlaneDRA is the dynamic resource allocation plane.
+	AllocationPlaneDRA AllocationPlane = "dra"
+)
+
 // HardwareDeviceStatus is the observed state of one device, written only by
 // the HardwareDevice controller via the /status subresource. Per-class facts
 // live in the optional struct selected by the immutable spec.class; optional
@@ -219,8 +275,7 @@ type HardwareDeviceStatus struct {
 
 	// allocationPlane is the allocation plane that evidenced the device.
 	// +optional
-	// +kubebuilder:validation:Enum=classic;dra
-	AllocationPlane string `json:"allocationPlane,omitempty"`
+	AllocationPlane AllocationPlane `json:"allocationPlane,omitempty"`
 
 	// collectedAt is the collector observation time. It is the collector's
 	// own clock, never a producer timestamp, and it is only refreshed by a

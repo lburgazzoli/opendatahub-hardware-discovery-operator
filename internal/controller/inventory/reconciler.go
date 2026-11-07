@@ -61,9 +61,6 @@ const (
 	// reset it; recovery removes it.
 	AnnotationNodeOrphanedAt = discovery.LabelPrefix + "/node-orphaned-at"
 
-	// classAccelerator is the only device class enabled in this PoC.
-	classAccelerator = "accelerator"
-
 	// defaultRescanPeriod bounds the periodic rescan that runs even
 	// without input events (design doc §10.1).
 	defaultRescanPeriod = 5 * time.Minute

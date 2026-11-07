@@ -137,7 +137,7 @@ func (s *scanner) createDevice(
 	state *inventoryState,
 	identity discovery.Identity,
 	name string,
-	class string,
+	class infrastructurev1alpha1.DeviceClass,
 	taken map[string]string,
 ) error {
 	spec, err := deviceSpec(class, identity)
@@ -174,7 +174,7 @@ func (s *scanner) ensureDevice(
 	ctx context.Context,
 	existing *infrastructurev1alpha1.HardwareDevice,
 	identity discovery.Identity,
-	class string,
+	class infrastructurev1alpha1.DeviceClass,
 ) error {
 	spec, err := deviceSpec(class, identity)
 	if err != nil {
@@ -209,13 +209,17 @@ func (s *scanner) ensureDevice(
 // mergeDeviceLabels sets the service-written label keys to their
 // deterministic values, preserving every other label. It reports whether
 // anything changed.
-func mergeDeviceLabels(existing map[string]string, class, node string) (map[string]string, bool) {
+func mergeDeviceLabels(
+	existing map[string]string,
+	class infrastructurev1alpha1.DeviceClass,
+	node string,
+) (map[string]string, bool) {
 	merged := existing
 	if merged == nil {
 		merged = make(map[string]string, 2)
 	}
 	changed := false
-	for key, value := range discovery.DeviceLabels(class, node) {
+	for key, value := range discovery.DeviceLabels(string(class), node) {
 		if merged[key] != value {
 			merged[key] = value
 			changed = true
@@ -225,17 +229,20 @@ func mergeDeviceLabels(existing map[string]string, class, node string) (map[stri
 }
 
 // deviceObjectMeta builds the metadata of a new device.
-func deviceObjectMeta(name, class, node string) metav1.ObjectMeta {
+func deviceObjectMeta(name string, class infrastructurev1alpha1.DeviceClass, node string) metav1.ObjectMeta {
 	return metav1.ObjectMeta{
 		Name:   name,
-		Labels: discovery.DeviceLabels(class, node),
+		Labels: discovery.DeviceLabels(string(class), node),
 	}
 }
 
 // deviceSpec maps a discovered identity to the HardwareDevice spec. The
 // locator mapping is the single place where the source DTO meets the API
 // types.
-func deviceSpec(class string, identity discovery.Identity) (infrastructurev1alpha1.HardwareDeviceSpec, error) {
+func deviceSpec(
+	class infrastructurev1alpha1.DeviceClass,
+	identity discovery.Identity,
+) (infrastructurev1alpha1.HardwareDeviceSpec, error) {
 	source, err := deviceSource(identity.Locator)
 	if err != nil {
 		return infrastructurev1alpha1.HardwareDeviceSpec{}, err
@@ -243,7 +250,7 @@ func deviceSpec(class string, identity discovery.Identity) (infrastructurev1alph
 	return infrastructurev1alpha1.HardwareDeviceSpec{
 		Class: class,
 		Identity: infrastructurev1alpha1.DeviceIdentity{
-			Kind: string(identity.Kind),
+			Kind: infrastructurev1alpha1.DeviceIdentityKind(identity.Kind),
 			ID:   identity.ID,
 		},
 		Host: infrastructurev1alpha1.DeviceHost{
@@ -259,7 +266,7 @@ func deviceSource(locator discovery.Locator) (infrastructurev1alpha1.DeviceSourc
 	switch typed := locator.(type) {
 	case dra.Locator:
 		return infrastructurev1alpha1.DeviceSource{
-			Kind: dra.SourceID,
+			Kind: infrastructurev1alpha1.DeviceSourceKindDRA,
 			DRA: &infrastructurev1alpha1.DRASource{
 				Driver: typed.Driver,
 				Pool:   typed.Pool,
@@ -268,7 +275,7 @@ func deviceSource(locator discovery.Locator) (infrastructurev1alpha1.DeviceSourc
 		}, nil
 	case classic.Locator:
 		return infrastructurev1alpha1.DeviceSource{
-			Kind: classic.SourceID,
+			Kind: infrastructurev1alpha1.DeviceSourceKindClassic,
 			Classic: &infrastructurev1alpha1.ClassicSource{
 				Node:  typed.Node,
 				Index: typed.Index,

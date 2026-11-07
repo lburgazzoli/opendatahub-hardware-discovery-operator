@@ -49,8 +49,8 @@ func recordObservation(
 	observation discovery.Observation,
 ) (string, time.Duration) {
 	facts := acceleratorStatus(observation.Facts)
-	provenance := sourceRef(device.Spec.Source.Kind, identity.Locator)
-	plane := string(identity.Plane)
+	provenance := sourceRef(string(device.Spec.Source.Kind), identity.Locator)
+	plane := infrastructurev1alpha1.AllocationPlane(identity.Plane)
 
 	// Facts equality excludes collectedAt: timestamp sampling alone is
 	// not a facts change.

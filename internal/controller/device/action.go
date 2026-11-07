@@ -240,7 +240,7 @@ func ineligibility(
 			"device class %q is not the singleton's discovered class %q",
 			device.Spec.Class, cfg.class), nil
 	}
-	if sourceByID(cfg.sources, device.Spec.Source.Kind) == nil {
+	if sourceByID(cfg.sources, string(device.Spec.Source.Kind)) == nil {
 		// The device's source is disabled in the current
 		// configuration: no trustworthy observation is possible.
 		return reasonSourceDisabled, fmt.Sprintf(

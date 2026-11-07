@@ -142,9 +142,9 @@ func nodeSummaries(selected []nodeResult, state *inventoryState) []infrastructur
 		summaries = append(summaries, infrastructurev1alpha1.NodeSummary{
 			Name:        res.node.Name,
 			UID:         res.node.UID,
-			Plane:       string(res.selection.Plane),
+			Plane:       infrastructurev1alpha1.AllocationPlane(res.selection.Plane),
 			DeviceCount: state.countByNode(res.node.Name),
-			Outcome:     string(res.selection.Outcome),
+			Outcome:     infrastructurev1alpha1.DiscoveryOutcome(res.selection.Outcome),
 		})
 	}
 	return summaries

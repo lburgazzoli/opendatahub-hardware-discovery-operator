@@ -31,7 +31,7 @@ import (
 
 // config is the validated singleton configuration of one observation.
 type config struct {
-	class    string
+	class    infrastructurev1alpha1.DeviceClass
 	selector labels.Selector
 	sources  discovery.Sources
 	maxStale time.Duration
@@ -98,7 +98,7 @@ func resolveIdentity(
 	device *infrastructurev1alpha1.HardwareDevice,
 	cfg config,
 ) (discovery.Source, discovery.Identity, error) {
-	source := sourceByID(cfg.sources, device.Spec.Source.Kind)
+	source := sourceByID(cfg.sources, string(device.Spec.Source.Kind))
 	if source == nil {
 		return nil, discovery.Identity{}, fmt.Errorf(
 			"device: source %q of hardware device %q is not registered",
@@ -134,9 +134,9 @@ func resolveIdentity(
 // its kind.
 func locatorFromSpec(spec infrastructurev1alpha1.DeviceSource) (discovery.Locator, error) {
 	switch {
-	case spec.Kind == dra.SourceID && spec.DRA != nil:
+	case spec.Kind == infrastructurev1alpha1.DeviceSourceKindDRA && spec.DRA != nil:
 		return dra.Locator{Driver: spec.DRA.Driver, Pool: spec.DRA.Pool, Device: spec.DRA.Device}, nil
-	case spec.Kind == classic.SourceID && spec.Classic != nil:
+	case spec.Kind == infrastructurev1alpha1.DeviceSourceKindClassic && spec.Classic != nil:
 		return classic.Locator{Node: spec.Classic.Node, Index: spec.Classic.Index}, nil
 	default:
 		return nil, fmt.Errorf(

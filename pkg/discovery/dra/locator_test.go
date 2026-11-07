@@ -63,7 +63,7 @@ func TestCodec(t *testing.T) {
 
 	locator := dra.Locator{Driver: nvidiaDriver, Pool: poolName, Device: gpuDeviceName()}
 	src := locator.DeviceSource()
-	g.Expect(src.Kind).To(Equal(draSourceID))
+	g.Expect(string(src.Kind)).To(Equal(draSourceID))
 	g.Expect(src.DRA).NotTo(BeNil())
 	g.Expect(src.DRA.Driver).To(Equal(nvidiaDriver))
 	g.Expect(src.DRA.Pool).To(Equal(poolName))
