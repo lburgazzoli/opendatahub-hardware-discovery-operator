@@ -17,7 +17,6 @@ limitations under the License.
 package inventory
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -29,15 +28,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	infrastructurev1alpha1 "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/api/infrastructure/v1alpha1"
 )
 
 // baseNode builds a Node carrying classic-plane evidence.
@@ -215,102 +207,4 @@ func TestNodePredicateLifecycleEvents(t *testing.T) {
 
 	g.Expect(nodeFilter.Create(event.CreateEvent{Object: baseNode()})).To(BeTrue())
 	g.Expect(nodeFilter.Delete(event.DeleteEvent{Object: baseNode()})).To(BeTrue())
-}
-
-// TestNewWatchSet proves every registration watches its GVK as an
-// unstructured object (the framework client's cache representation),
-// maps child and Node events to the singleton request, and filters
-// status-only churn through generation predicates.
-func TestNewWatchSet(t *testing.T) {
-	g := NewWithT(t)
-
-	scheme := runtime.NewScheme()
-	utilruntime.Must(corev1.AddToScheme(scheme))
-	utilruntime.Must(infrastructurev1alpha1.AddToScheme(scheme))
-
-	watches, err := newWatchSet(scheme)
-	g.Expect(err).NotTo(HaveOccurred())
-
-	singletonGVK := schema.GroupVersionKind{
-		Group: "infrastructure.platform.opendatahub.io", Version: "v1alpha1", Kind: "HardwareDiscovery",
-	}
-	deviceGVK := schema.GroupVersionKind{
-		Group: "infrastructure.platform.opendatahub.io", Version: "v1alpha1", Kind: "HardwareDevice",
-	}
-	nodeGVK := schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Node"}
-
-	registrations := []struct {
-		name         string
-		registration watchRegistration
-		gvk          schema.GroupVersionKind
-	}{
-		{"singleton", watches.singleton, singletonGVK},
-		{"devices", watches.devices, deviceGVK},
-		{"nodes", watches.nodes, nodeGVK},
-	}
-
-	for _, registration := range registrations {
-		t.Run(registration.name, func(t *testing.T) {
-			g := NewWithT(t)
-			u, isUnstructured := registration.registration.object.(*unstructured.Unstructured)
-			g.Expect(isUnstructured).To(BeTrue(),
-				"%s watch must use the unstructured cache representation", registration.name)
-			g.Expect(u.GroupVersionKind()).To(Equal(registration.gvk))
-		})
-
-		// Mapped watches (children and Nodes) enqueue exactly one
-		// request: the singleton.
-		if registration.registration.handler == nil {
-			continue
-		}
-		t.Run(registration.name+"/handler", func(t *testing.T) {
-			g := NewWithT(t)
-			var watched client.Object
-			if registration.gvk == nodeGVK {
-				watched = unstructuredNode(t, baseNode())
-			} else {
-				device := &unstructured.Unstructured{}
-				device.SetGroupVersionKind(registration.gvk)
-				device.SetName("gpu-abc123")
-				watched = device
-			}
-			queue := workqueue.NewTypedRateLimitingQueue[reconcile.Request](
-				workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
-			registration.registration.handler.Create(context.Background(), event.CreateEvent{Object: watched}, queue)
-			g.Expect(queue.Len()).To(Equal(1))
-			item, _ := queue.Get()
-			g.Expect(item).To(Equal(reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: SingletonName},
-			}))
-		})
-
-		// Generation-predicated watches (the singleton and its children)
-		// pass spec changes and filter status-only churn. The Node watch
-		// has its own evidence predicate, covered above.
-		if _, isGeneration := registration.registration.predicate.(predicate.GenerationChangedPredicate); !isGeneration {
-			continue
-		}
-		t.Run(registration.name+"/generation", func(t *testing.T) {
-			g := NewWithT(t)
-			gvk := registration.registration.object.GetObjectKind().GroupVersionKind()
-
-			stale := &unstructured.Unstructured{}
-			stale.SetGroupVersionKind(gvk)
-			stale.SetName("watched")
-			stale.SetGeneration(1)
-
-			fresh := stale.DeepCopy()
-			fresh.SetGeneration(2)
-
-			g.Expect(registration.registration.predicate.Update(event.UpdateEvent{
-				ObjectOld: stale, ObjectNew: fresh,
-			})).To(BeTrue(), "a spec change must trigger a scan")
-
-			statusOnly := stale.DeepCopy()
-			statusOnly.Object["status"] = map[string]any{"observed": true}
-			g.Expect(registration.registration.predicate.Update(event.UpdateEvent{
-				ObjectOld: stale, ObjectNew: statusOnly,
-			})).To(BeFalse(), "a status-only change must not trigger a scan")
-		})
-	}
 }

@@ -76,78 +76,76 @@ func TestReconcileCreatesOwnedDevices(t *testing.T) {
 	}
 
 	f := newFixture(t, single, nodeA, nodeB, plain)
+	g := NewWithT(t)
 	f.sources = []discovery.Source{draSrc, classicSrc}
 
-	result := f.mustReconcile()
-	f.g.Expect(result.RequeueAfter).To(Equal(5 * time.Minute))
+	result := f.mustReconcile(t)
+	g.Expect(result.RequeueAfter).To(Equal(5 * time.Minute))
 
-	f.g.Expect(f.listDevices()).To(HaveLen(4))
+	g.Expect(f.listDevices(t)).To(HaveLen(4))
 
 	// DRA device: spec, ownership, labels, empty status.
-	draDevice := f.getDevice(deviceIDGPU)
-	f.g.Expect(draDevice.Spec).To(Equal(draDeviceSpec(deviceIDGPU, nodeAName, nodeAUID, "workerpool")))
-	f.g.Expect(draDevice.Status).To(Equal(infrastructurev1alpha1.HardwareDeviceStatus{}),
+	draDevice := f.getDevice(t, deviceIDGPU)
+	g.Expect(draDevice.Spec).To(Equal(draDeviceSpec(deviceIDGPU, nodeAName, nodeAUID, "workerpool")))
+	g.Expect(draDevice.Status).To(Equal(infrastructurev1alpha1.HardwareDeviceStatus{}),
 		"the inventory controller never writes device status")
 	ref := metav1.GetControllerOf(draDevice)
-	f.g.Expect(ref).NotTo(BeNil())
-	f.g.Expect(ref.Kind).To(Equal("HardwareDiscovery"))
-	f.g.Expect(ref.Name).To(Equal(inventory.SingletonName))
-	f.g.Expect(ref.UID).To(Equal(types.UID(singletonUID)))
-	f.g.Expect(draDevice.OwnerReferences).To(HaveLen(1), "no Node owner reference is ever added")
-	f.g.Expect(draDevice.Labels).To(Equal(map[string]string{
+	g.Expect(ref).NotTo(BeNil())
+	g.Expect(ref.Kind).To(Equal("HardwareDiscovery"))
+	g.Expect(ref.Name).To(Equal(inventory.SingletonName))
+	g.Expect(ref.UID).To(Equal(types.UID(singletonUID)))
+	g.Expect(draDevice.OwnerReferences).To(HaveLen(1), "no Node owner reference is ever added")
+	g.Expect(draDevice.Labels).To(Equal(map[string]string{
 		deviceClassLabel: classTest,
 		nodeLabel:        nodeAName,
 	}))
 
 	// Classic device: nodeIndex identity with a classic locator.
-	classicDevice := f.getDevice(nodeBName + "-gpu-0")
-	f.g.Expect(classicDevice.Spec).To(Equal(classicDeviceSpec(nodeBName, nodeBUID, 0)))
+	classicDevice := f.getDevice(t, nodeBName+"-gpu-0")
+	g.Expect(classicDevice.Spec).To(Equal(classicDeviceSpec(nodeBName, nodeBUID, 0)))
 
 	// Singleton status: summaries, phase and conditions with the
 	// generation. The framework contributes ProvisioningSucceeded; the
 	// derived Ready carries the scan's success reason and message.
-	updated := f.getSingleton()
-	f.g.Expect(updated.Status.ObservedGeneration).To(Equal(int64(1)))
-	f.g.Expect(updated.Status.Phase).To(Equal("Ready"))
-	f.g.Expect(updated.Status.NodeSummaries).To(Equal([]infrastructurev1alpha1.NodeSummary{
+	updated := f.getSingleton(t)
+	g.Expect(updated.Status.ObservedGeneration).To(Equal(int64(1)))
+	g.Expect(updated.Status.Phase).To(Equal("Ready"))
+	g.Expect(updated.Status.NodeSummaries).To(Equal([]infrastructurev1alpha1.NodeSummary{
 		{Name: nodeAName, UID: types.UID(nodeAUID), Plane: sourceIDDRA, DeviceCount: 2, Outcome: outcomeSuccess},
 		{Name: nodeBName, UID: types.UID(nodeBUID), Plane: sourceIDClassic, DeviceCount: 2, Outcome: outcomeSuccess},
 		{Name: plainName, UID: types.UID(plainUID), DeviceCount: 0, Outcome: outcomeUnknown},
 	}))
-	ready := condition(f.g, updated, inventory.ConditionTypeReady)
-	f.g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
-	f.g.Expect(ready.Reason).To(Equal("Reconciled"))
-	f.g.Expect(ready.ObservedGeneration).To(Equal(int64(1)))
-	degraded := condition(f.g, updated, inventory.ConditionTypeDegraded)
-	f.g.Expect(degraded.Status).To(Equal(metav1.ConditionFalse))
-	f.g.Expect(degraded.Reason).To(Equal("Reconciled"))
-	provisioned := condition(f.g, updated, "ProvisioningSucceeded")
-	f.g.Expect(provisioned.Status).To(Equal(metav1.ConditionTrue))
+	ready := condition(g, updated, inventory.ConditionTypeReady)
+	g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(ready.Reason).To(Equal("Reconciled"))
+	g.Expect(ready.ObservedGeneration).To(Equal(int64(1)))
+	degraded := condition(g, updated, inventory.ConditionTypeDegraded)
+	g.Expect(degraded.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(degraded.Reason).To(Equal("Reconciled"))
+	provisioned := condition(g, updated, "ProvisioningSucceeded")
+	g.Expect(provisioned.Status).To(Equal(metav1.ConditionTrue))
 
-	// A second, unchanged scan writes nothing to children and leaves the
-	// persisted singleton status unchanged (the framework's status apply
-	// may run, but it carries identical content).
-	f.client.reset()
-	f.mustReconcile()
-	f.g.Expect(f.client.creates).To(BeEmpty())
-	f.g.Expect(f.client.updates).To(BeEmpty())
-	f.g.Expect(f.client.deletes).To(BeEmpty())
-	f.g.Expect(f.client.patches).To(BeEmpty())
-	f.g.Expect(f.client.applies).To(BeEmpty())
-	f.g.Expect(f.client.deleteAllOfs).To(BeEmpty())
-	f.g.Expect(f.client.statusUpdates).NotTo(ContainElement(HavePrefix("HardwareDevice/")),
-		"the inventory controller never touches device /status")
+	// A second, unchanged scan leaves the produced objects identical:
+	// children are untouched — including their /status, which belongs
+	// to the device controller — and the persisted singleton status
+	// carries the same conditions (the framework's status apply may
+	// run, but it carries identical content).
+	devicesBefore := f.listDevices(t)
+	singleBefore := f.getSingleton(t)
+	f.mustReconcile(t)
+	g.Expect(f.listDevices(t)).To(Equal(devicesBefore),
+		"an unchanged scan never touches children, including their status")
 
-	unchanged := f.getSingleton()
-	f.g.Expect(unchanged.Status.ObservedGeneration).To(Equal(int64(1)))
-	f.g.Expect(unchanged.Status.Phase).To(Equal("Ready"))
-	f.g.Expect(unchanged.Status.NodeSummaries).To(Equal(updated.Status.NodeSummaries))
+	unchanged := f.getSingleton(t)
+	g.Expect(unchanged.Status.ObservedGeneration).To(Equal(int64(1)))
+	g.Expect(unchanged.Status.Phase).To(Equal("Ready"))
+	g.Expect(unchanged.Status.NodeSummaries).To(Equal(singleBefore.Status.NodeSummaries))
 	for _, conditionType := range []string{
 		inventory.ConditionTypeReady, inventory.ConditionTypeDegraded, "ProvisioningSucceeded",
 	} {
-		again := condition(f.g, unchanged, conditionType)
-		before := condition(f.g, updated, conditionType)
-		f.g.Expect(again).To(Equal(before), "condition %q is unchanged by a no-op scan", conditionType)
+		again := condition(g, unchanged, conditionType)
+		before := condition(g, singleBefore, conditionType)
+		g.Expect(again).To(Equal(before), "condition %q is unchanged by a no-op scan", conditionType)
 	}
 }
 
@@ -173,6 +171,7 @@ func TestReconcileUpdatesSpecAndRetainsStatus(t *testing.T) {
 	device := seedDevice(t, testScheme(t), single, deviceIDGPU, oldSpec, seededStatus)
 
 	f := newFixture(t, single, nodeA, device)
+	g := NewWithT(t)
 	f.sources = []discovery.Source{&fakeSource{
 		id:     sourceIDDRA,
 		plane:  discovery.PlaneDRA,
@@ -182,25 +181,22 @@ func TestReconcileUpdatesSpecAndRetainsStatus(t *testing.T) {
 		},
 	}}
 
-	f.mustReconcile()
+	f.mustReconcile(t)
 
-	f.g.Expect(f.client.updates).To(HaveLen(1), "exactly one primary-endpoint spec write")
-	f.g.Expect(f.client.creates).To(BeEmpty())
-	f.g.Expect(f.client.deletes).To(BeEmpty())
-	// The singleton's own status is this controller's to write; the
-	// device's never is.
-	f.g.Expect(f.client.statusUpdates).NotTo(ContainElement(HavePrefix("HardwareDevice/")),
-		"the inventory controller never touches device /status")
+	// State carries the proof: exactly one device exists, carrying the
+	// new spec while every seeded status field survives — the inventory
+	// controller never touches device /status.
+	g.Expect(f.listDevices(t)).To(HaveLen(1))
 
-	updated := f.getDevice(deviceIDGPU)
-	f.g.Expect(updated.Spec).To(Equal(draDeviceSpec(deviceIDGPU, nodeAName, nodeAUID, "newpool")))
+	updated := f.getDevice(t, deviceIDGPU)
+	g.Expect(updated.Spec).To(Equal(draDeviceSpec(deviceIDGPU, nodeAName, nodeAUID, "newpool")))
 	// The fake client re-materializes metav1.Time in the process time
 	// zone, so CollectedAt compares by instant, not by location.
-	f.g.Expect(updated.Status.Accelerator).To(Equal(seededStatus.Accelerator))
-	f.g.Expect(updated.Status.AllocationPlane).To(Equal(seededStatus.AllocationPlane))
-	f.g.Expect(updated.Status.SourceRef).To(Equal(seededStatus.SourceRef))
-	f.g.Expect(updated.Status.ObservedGeneration).To(Equal(seededStatus.ObservedGeneration))
-	f.g.Expect(updated.Status.CollectedAt.Time.Equal(seededStatus.CollectedAt.Time)).To(BeTrue(),
+	g.Expect(updated.Status.Accelerator).To(Equal(seededStatus.Accelerator))
+	g.Expect(updated.Status.AllocationPlane).To(Equal(seededStatus.AllocationPlane))
+	g.Expect(updated.Status.SourceRef).To(Equal(seededStatus.SourceRef))
+	g.Expect(updated.Status.ObservedGeneration).To(Equal(seededStatus.ObservedGeneration))
+	g.Expect(updated.Status.CollectedAt.Time.Equal(seededStatus.CollectedAt.Time)).To(BeTrue(),
 		"existing status survives every spec update")
 }
 
@@ -269,7 +265,6 @@ func TestReconcilePruneDecisions(t *testing.T) {
 			device := seedDevice(t, testScheme(t), single, deviceIDGPU, spec, status)
 
 			f := newFixture(t, single, nodeA, device)
-			f.g = g
 			f.sources = []discovery.Source{&fakeSource{
 				id:     sourceIDDRA,
 				plane:  discovery.PlaneDRA,
@@ -277,19 +272,19 @@ func TestReconcilePruneDecisions(t *testing.T) {
 				enums:  map[string]discovery.Enumeration{nodeAName: tc.enum},
 			}}
 
-			f.mustReconcile()
+			f.mustReconcile(t)
 
 			if tc.expectDeleted {
-				f.deviceMissing(deviceIDGPU)
+				f.deviceMissing(t, deviceIDGPU)
 			} else {
-				retained := f.getDevice(deviceIDGPU)
+				retained := f.getDevice(t, deviceIDGPU)
 				g.Expect(retained.Spec).To(Equal(spec))
 				g.Expect(retained.Status).To(Equal(status), "unknown evidence retains facts")
 				g.Expect(retained.Annotations).NotTo(HaveKey(inventory.AnnotationNodeOrphanedAt),
 					"a present node is never orphaned")
 			}
 
-			updated := f.getSingleton()
+			updated := f.getSingleton(t)
 			ready := condition(g, updated, inventory.ConditionTypeReady)
 			if tc.expectReason == "" {
 				g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
@@ -332,28 +327,26 @@ func TestReconcileZeroAdvertisementPruning(t *testing.T) {
 	deviceName := discovery.DeviceName(gpuUUID)
 
 	f := newFixture(t, single, nodeA, plain, slice)
+	g := NewWithT(t)
 	f.useRealSources(f.inner)
 	// Discover: the DRA-backed device exists; the never-claimed node
 	// stays a benign Unknown.
-	f.mustReconcile()
-	discovered := f.getDevice(deviceName)
-	f.g.Expect(discovered.Spec).To(Equal(draDeviceSpec(gpuUUID, nodeAName, nodeAUID, poolName)))
-	f.g.Expect(f.getSingleton().Status.NodeSummaries).To(Equal([]infrastructurev1alpha1.NodeSummary{
+	f.mustReconcile(t)
+	discovered := f.getDevice(t, deviceName)
+	g.Expect(discovered.Spec).To(Equal(draDeviceSpec(gpuUUID, nodeAName, nodeAUID, poolName)))
+	g.Expect(f.getSingleton(t).Status.NodeSummaries).To(Equal([]infrastructurev1alpha1.NodeSummary{
 		{Name: nodeAName, UID: types.UID(nodeAUID), Plane: sourceIDDRA, DeviceCount: 1, Outcome: outcomeSuccess},
 		{Name: plainName, UID: types.UID(plainUID), DeviceCount: 0, Outcome: outcomeUnknown},
 	}))
 
 	t.Run("zero advertisement prunes the source-backed device", func(t *testing.T) {
 		g := NewWithT(t)
-		f.g = g
-
 		g.Expect(f.client.Delete(context.Background(), slice)).To(Succeed())
-		f.client.reset()
-		f.mustReconcile()
+		f.mustReconcile(t)
 
-		f.deviceMissing(deviceName)
+		f.deviceMissing(t, deviceName)
 
-		updated := f.getSingleton()
+		updated := f.getSingleton(t)
 		g.Expect(updated.Status.NodeSummaries).To(Equal([]infrastructurev1alpha1.NodeSummary{
 			{Name: nodeAName, UID: types.UID(nodeAUID), DeviceCount: 0, Outcome: outcomeUnknown},
 			{Name: plainName, UID: types.UID(plainUID), DeviceCount: 0, Outcome: outcomeUnknown},
@@ -365,14 +358,12 @@ func TestReconcileZeroAdvertisementPruning(t *testing.T) {
 
 	t.Run("forbidden read retains the source-backed device", func(t *testing.T) {
 		g := NewWithT(t)
-		f.g = g
-
 		// Recreate the advertisement, rediscover, then fail the reads.
 		// The fake client rejects Create with a resourceVersion set.
 		slice.ResourceVersion = ""
 		g.Expect(f.client.Create(context.Background(), slice)).To(Succeed())
-		f.mustReconcile()
-		g.Expect(f.getDevice(deviceName).Spec).To(Equal(draDeviceSpec(gpuUUID, nodeAName, nodeAUID, poolName)))
+		f.mustReconcile(t)
+		g.Expect(f.getDevice(t, deviceName).Spec).To(Equal(draDeviceSpec(gpuUUID, nodeAName, nodeAUID, poolName)))
 
 		f.useRealSources(interceptor.NewClient(f.inner, interceptor.Funcs{
 			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
@@ -382,11 +373,11 @@ func TestReconcileZeroAdvertisementPruning(t *testing.T) {
 				return c.List(ctx, list, opts...)
 			},
 		}))
-		f.mustReconcile()
+		f.mustReconcile(t)
 
-		retained := f.getDevice(deviceName)
+		retained := f.getDevice(t, deviceName)
 		g.Expect(retained.Spec).To(Equal(draDeviceSpec(gpuUUID, nodeAName, nodeAUID, poolName)))
-		ready := condition(g, f.getSingleton(), inventory.ConditionTypeReady)
+		ready := condition(g, f.getSingleton(t), inventory.ConditionTypeReady)
 		g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(ready.Reason).To(Equal("SourceForbidden"))
 
@@ -395,16 +386,14 @@ func TestReconcileZeroAdvertisementPruning(t *testing.T) {
 
 	t.Run("incomplete snapshot retains the source-backed device", func(t *testing.T) {
 		g := NewWithT(t)
-		f.g = g
-
 		g.Expect(f.client.Delete(context.Background(), slice)).To(Succeed())
 		incomplete := incompleteSlicePool(sliceName+"-incomplete", nodeAName, poolName, gpuUUID, modelTesla)
 		g.Expect(f.client.Create(context.Background(), incomplete)).To(Succeed())
-		f.mustReconcile()
+		f.mustReconcile(t)
 
-		retained := f.getDevice(deviceName)
+		retained := f.getDevice(t, deviceName)
 		g.Expect(retained.Spec).To(Equal(draDeviceSpec(gpuUUID, nodeAName, nodeAUID, poolName)))
-		ready := condition(g, f.getSingleton(), inventory.ConditionTypeReady)
+		ready := condition(g, f.getSingleton(t), inventory.ConditionTypeReady)
 		g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(ready.Reason).To(Equal("PoolIncomplete"))
 	})
@@ -418,6 +407,7 @@ func TestReconcileSelectorPruning(t *testing.T) {
 	single := testSingleton()
 
 	f := newFixture(t, single, nodeA)
+	g := NewWithT(t)
 	f.sources = []discovery.Source{&fakeSource{
 		id:     sourceIDDRA,
 		plane:  discovery.PlaneDRA,
@@ -427,25 +417,24 @@ func TestReconcileSelectorPruning(t *testing.T) {
 		},
 	}}
 
-	f.mustReconcile()
-	f.g.Expect(f.listDevices()).To(HaveLen(1))
+	f.mustReconcile(t)
+	g.Expect(f.listDevices(t)).To(HaveLen(1))
 
 	// Narrow the selector so node A no longer matches.
-	single = f.getSingleton()
+	single = f.getSingleton(t)
 	single.Spec.NodeSelector = &metav1.LabelSelector{
 		MatchLabels: map[string]string{selectorKeyPool: "other"},
 	}
 	single.Generation = 2
-	f.g.Expect(f.client.Update(context.Background(), single)).To(Succeed())
-	f.client.reset()
+	g.Expect(f.client.Update(context.Background(), single)).To(Succeed())
 
-	f.mustReconcile()
+	f.mustReconcile(t)
 
-	f.deviceMissing(deviceIDGPU)
-	updated := f.getSingleton()
-	f.g.Expect(updated.Status.NodeSummaries).To(BeEmpty())
-	ready := condition(f.g, updated, inventory.ConditionTypeReady)
-	f.g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+	f.deviceMissing(t, deviceIDGPU)
+	updated := f.getSingleton(t)
+	g.Expect(updated.Status.NodeSummaries).To(BeEmpty())
+	ready := condition(g, updated, inventory.ConditionTypeReady)
+	g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
 }
 
 // TestReconcileCollisionGuard proves a derived name held by a foreign
@@ -466,6 +455,7 @@ func TestReconcileCollisionGuard(t *testing.T) {
 	}
 
 	f := newFixture(t, single, nodeA, foreign)
+	g := NewWithT(t)
 	f.sources = []discovery.Source{&fakeSource{
 		id:     sourceIDDRA,
 		plane:  discovery.PlaneDRA,
@@ -475,22 +465,19 @@ func TestReconcileCollisionGuard(t *testing.T) {
 		},
 	}}
 
-	f.mustReconcile()
+	f.mustReconcile(t)
 
-	f.g.Expect(f.client.creates).To(BeEmpty(), "a colliding name is never created over")
-	f.g.Expect(f.client.updates).To(BeEmpty(), "a foreign object is never touched")
-	f.g.Expect(f.client.deletes).To(BeEmpty())
-	f.g.Expect(f.listDevices()).To(HaveLen(1), "only the foreign device exists")
+	g.Expect(f.listDevices(t)).To(HaveLen(1), "only the foreign device exists")
 
-	untouched := f.getDevice(deviceIDGPU)
-	f.g.Expect(untouched.Spec).To(Equal(foreignSpec))
-	f.g.Expect(untouched.Status).To(Equal(foreignStatus))
-	f.g.Expect(untouched.OwnerReferences).To(BeEmpty())
+	untouched := f.getDevice(t, deviceIDGPU)
+	g.Expect(untouched.Spec).To(Equal(foreignSpec))
+	g.Expect(untouched.Status).To(Equal(foreignStatus))
+	g.Expect(untouched.OwnerReferences).To(BeEmpty())
 
-	updated := f.getSingleton()
-	ready := condition(f.g, updated, inventory.ConditionTypeReady)
-	f.g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
-	f.g.Expect(ready.Reason).To(Equal("NameCollision"))
+	updated := f.getSingleton(t)
+	ready := condition(g, updated, inventory.ConditionTypeReady)
+	g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(ready.Reason).To(Equal("NameCollision"))
 }
 
 // TestReconcileNodeGraceLifecycle covers the persistent node-absence
@@ -501,6 +488,7 @@ func TestReconcileNodeGraceLifecycle(t *testing.T) {
 	single := testSingleton()
 
 	f := newFixture(t, single, nodeA)
+	g := NewWithT(t)
 	f.sources = []discovery.Source{&fakeSource{
 		id:     sourceIDDRA,
 		plane:  discovery.PlaneDRA,
@@ -510,41 +498,39 @@ func TestReconcileNodeGraceLifecycle(t *testing.T) {
 		},
 	}}
 
-	f.mustReconcile()
-	f.g.Expect(f.listDevices()).To(HaveLen(1))
+	f.mustReconcile(t)
+	g.Expect(f.listDevices(t)).To(HaveLen(1))
 
 	// The node disappears: the device is retained and stamped.
-	f.g.Expect(f.client.Delete(context.Background(), nodeA)).To(Succeed())
+	g.Expect(f.client.Delete(context.Background(), nodeA)).To(Succeed())
 	f.clock.advance(time.Minute)
-	f.mustReconcile()
+	f.mustReconcile(t)
 
-	stamped := f.getDevice(deviceIDGPU)
+	stamped := f.getDevice(t, deviceIDGPU)
 	stamp, ok := stamped.Annotations[inventory.AnnotationNodeOrphanedAt]
-	f.g.Expect(ok).To(BeTrue(), "orphaned devices carry the grace annotation")
-	f.g.Expect(stamp).To(Equal(f.clock.now.UTC().Format(time.RFC3339)))
+	g.Expect(ok).To(BeTrue(), "orphaned devices carry the grace annotation")
+	g.Expect(stamp).To(Equal(f.clock.now.UTC().Format(time.RFC3339)))
 
 	// A restart (fresh reconciler, same cluster state) must not reset the
 	// persisted deadline while the grace window is still running.
 	f.clock.advance(10 * time.Minute)
-	restarted := f.reconciler()
+	restarted := f.reconciler(t)
 	_, err := restarted.Reconcile(context.Background(), request())
-	f.g.Expect(err).NotTo(HaveOccurred())
-	f.g.Expect(f.getDevice(deviceIDGPU).Annotations[inventory.AnnotationNodeOrphanedAt]).
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(f.getDevice(t, deviceIDGPU).Annotations[inventory.AnnotationNodeOrphanedAt]).
 		To(Equal(stamp), "a restart cannot restamp the grace start")
 
 	// Still inside the 15m window measured from the original stamp
 	// (13 minutes elapsed).
 	f.clock.advance(3 * time.Minute)
-	f.mustReconcile()
-	f.g.Expect(f.listDevices()).To(HaveLen(1))
+	f.mustReconcile(t)
+	g.Expect(f.listDevices(t)).To(HaveLen(1))
 
 	// Past the deadline (15 minutes and a second elapsed): the device is
 	// pruned.
 	f.clock.advance(2*time.Minute + time.Second)
-	f.client.reset()
-	f.mustReconcile()
-	f.deviceMissing(deviceIDGPU)
-	f.g.Expect(f.client.deletes).To(HaveLen(1))
+	f.mustReconcile(t)
+	f.deviceMissing(t, deviceIDGPU)
 }
 
 // TestReconcileNodeRecovery covers node recovery: the same node (same
@@ -554,6 +540,7 @@ func TestReconcileNodeRecovery(t *testing.T) {
 	single := testSingleton()
 
 	f := newFixture(t, single, nodeA)
+	g := NewWithT(t)
 	f.sources = []discovery.Source{&fakeSource{
 		id:     sourceIDDRA,
 		plane:  discovery.PlaneDRA,
@@ -563,25 +550,25 @@ func TestReconcileNodeRecovery(t *testing.T) {
 		},
 	}}
 
-	f.mustReconcile()
+	f.mustReconcile(t)
 
 	// Orphan, then recover with the same node incarnation.
-	f.g.Expect(f.client.Delete(context.Background(), nodeA)).To(Succeed())
+	g.Expect(f.client.Delete(context.Background(), nodeA)).To(Succeed())
 	f.clock.advance(time.Minute)
-	f.mustReconcile()
-	f.g.Expect(f.getDevice(deviceIDGPU).Annotations).To(HaveKey(inventory.AnnotationNodeOrphanedAt))
+	f.mustReconcile(t)
+	g.Expect(f.getDevice(t, deviceIDGPU).Annotations).To(HaveKey(inventory.AnnotationNodeOrphanedAt))
 
 	// The fake client rejects Create with a resourceVersion set; the
 	// recovered node keeps its name and UID but is otherwise fresh.
 	nodeA.ResourceVersion = ""
-	f.g.Expect(f.client.Create(context.Background(), nodeA)).To(Succeed())
+	g.Expect(f.client.Create(context.Background(), nodeA)).To(Succeed())
 	f.clock.advance(time.Minute)
-	f.mustReconcile()
+	f.mustReconcile(t)
 
-	recovered := f.getDevice(deviceIDGPU)
-	f.g.Expect(recovered.Annotations).NotTo(HaveKey(inventory.AnnotationNodeOrphanedAt),
+	recovered := f.getDevice(t, deviceIDGPU)
+	g.Expect(recovered.Annotations).NotTo(HaveKey(inventory.AnnotationNodeOrphanedAt),
 		"recovery removes the grace annotation")
-	f.g.Expect(recovered.Spec).To(Equal(draDeviceSpec(deviceIDGPU, nodeAName, nodeAUID, "workerpool")))
+	g.Expect(recovered.Spec).To(Equal(draDeviceSpec(deviceIDGPU, nodeAName, nodeAUID, "workerpool")))
 }
 
 // TestReconcileNodeReplacement covers node name reuse: the same device id
@@ -593,6 +580,7 @@ func TestReconcileNodeReplacement(t *testing.T) {
 	single := testSingleton()
 
 	f := newFixture(t, single, nodeA)
+	g := NewWithT(t)
 	f.sources = []discovery.Source{&fakeSource{
 		id:     sourceIDDRA,
 		plane:  discovery.PlaneDRA,
@@ -608,44 +596,41 @@ func TestReconcileNodeReplacement(t *testing.T) {
 
 	// Initial incarnation with observed facts (written by the device
 	// controller, not by this controller).
-	f.mustReconcile()
-	old := f.getDevice(deviceIDGPU)
+	f.mustReconcile(t)
+	old := f.getDevice(t, deviceIDGPU)
 	old.Status = infrastructurev1alpha1.HardwareDeviceStatus{
 		Accelerator:     &infrastructurev1alpha1.AcceleratorDeviceStatus{Model: modelTesla},
 		AllocationPlane: sourceIDDRA,
 	}
-	f.g.Expect(f.client.Status().Update(context.Background(), old)).To(Succeed())
+	g.Expect(f.client.Status().Update(context.Background(), old)).To(Succeed())
 
 	// Replace the node: same name, new UID.
-	f.g.Expect(f.client.Delete(context.Background(), nodeA)).To(Succeed())
+	g.Expect(f.client.Delete(context.Background(), nodeA)).To(Succeed())
 	replacement := testNode(nodeAName, "uid-new", nil)
-	f.g.Expect(f.client.Create(context.Background(), replacement)).To(Succeed())
+	g.Expect(f.client.Create(context.Background(), replacement)).To(Succeed())
 	enumerate("uid-new")
 
 	// During grace the old object is retained and orphaned, and the new
 	// incarnation waits for the deterministic name.
-	f.mustReconcile()
-	f.g.Expect(f.listDevices()).To(HaveLen(1), "the new incarnation defers while grace holds the name")
-	orphaned := f.getDevice(deviceIDGPU)
-	f.g.Expect(orphaned.Spec.Host.UID).To(Equal(types.UID(nodeAUID)))
-	f.g.Expect(orphaned.Annotations).To(HaveKey(inventory.AnnotationNodeOrphanedAt))
-	f.g.Expect(orphaned.Status.Accelerator.Model).To(Equal(modelTesla), "old facts are not refreshed")
+	f.mustReconcile(t)
+	g.Expect(f.listDevices(t)).To(HaveLen(1), "the new incarnation defers while grace holds the name")
+	orphaned := f.getDevice(t, deviceIDGPU)
+	g.Expect(orphaned.Spec.Host.UID).To(Equal(types.UID(nodeAUID)))
+	g.Expect(orphaned.Annotations).To(HaveKey(inventory.AnnotationNodeOrphanedAt))
+	g.Expect(orphaned.Status.Accelerator.Model).To(Equal(modelTesla), "old facts are not refreshed")
 
 	// After grace the old incarnation is pruned and a fresh object with
 	// an empty status is created for the new node.
 	f.clock.advance(16 * time.Minute)
-	f.client.reset()
-	f.mustReconcile()
-	f.g.Expect(f.listDevices()).To(HaveLen(1))
-	f.g.Expect(f.client.deletes).To(HaveLen(1), "the prior incarnation is pruned")
-	f.g.Expect(f.client.creates).To(HaveLen(1), "the fresh incarnation is created")
-	fresh := f.getDevice(deviceIDGPU)
-	f.g.Expect(fresh.Spec).To(Equal(draDeviceSpec(deviceIDGPU, nodeAName, "uid-new", "workerpool")))
-	f.g.Expect(fresh.Status).To(Equal(infrastructurev1alpha1.HardwareDeviceStatus{}),
+	f.mustReconcile(t)
+	g.Expect(f.listDevices(t)).To(HaveLen(1))
+	fresh := f.getDevice(t, deviceIDGPU)
+	g.Expect(fresh.Spec).To(Equal(draDeviceSpec(deviceIDGPU, nodeAName, "uid-new", "workerpool")))
+	g.Expect(fresh.Status).To(Equal(infrastructurev1alpha1.HardwareDeviceStatus{}),
 		"status is never transferred between incarnations")
 
-	updated := f.getSingleton()
-	f.g.Expect(updated.Status.NodeSummaries).To(ContainElement(infrastructurev1alpha1.NodeSummary{
+	updated := f.getSingleton(t)
+	g.Expect(updated.Status.NodeSummaries).To(ContainElement(infrastructurev1alpha1.NodeSummary{
 		Name:        nodeAName,
 		UID:         "uid-new",
 		Plane:       sourceIDDRA,
@@ -662,6 +647,7 @@ func TestReconcileCrossNodeAmbiguity(t *testing.T) {
 	single := testSingleton()
 
 	f := newFixture(t, single, nodeA, nodeB)
+	g := NewWithT(t)
 	f.sources = []discovery.Source{&fakeSource{
 		id:     sourceIDDRA,
 		plane:  discovery.PlaneDRA,
@@ -672,14 +658,13 @@ func TestReconcileCrossNodeAmbiguity(t *testing.T) {
 		},
 	}}
 
-	f.mustReconcile()
+	f.mustReconcile(t)
 
-	f.g.Expect(f.client.creates).To(BeEmpty())
-	f.g.Expect(f.listDevices()).To(BeEmpty())
-	updated := f.getSingleton()
-	ready := condition(f.g, updated, inventory.ConditionTypeReady)
-	f.g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
-	f.g.Expect(ready.Reason).To(Equal("IdentityAmbiguous"))
+	g.Expect(f.listDevices(t)).To(BeEmpty())
+	updated := f.getSingleton(t)
+	ready := condition(g, updated, inventory.ConditionTypeReady)
+	g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(ready.Reason).To(Equal("IdentityAmbiguous"))
 }
 
 // TestReconcileInvalidConfiguration covers actionable conditions for
@@ -718,56 +703,71 @@ func TestReconcileInvalidConfiguration(t *testing.T) {
 				infrastructurev1alpha1.HardwareDeviceStatus{})
 
 			f := newFixture(t, single, nodeA, device)
-			f.g = g
 			f.sources = []discovery.Source{&fakeSource{id: sourceIDDRA, plane: discovery.PlaneDRA}}
 
-			result := f.mustReconcile()
+			result := f.mustReconcile(t)
 			g.Expect(result.RequeueAfter).To(Equal(5 * time.Minute))
 
-			updated := f.getSingleton()
+			updated := f.getSingleton(t)
 			ready := condition(g, updated, inventory.ConditionTypeReady)
 			g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 			g.Expect(ready.Reason).To(Equal("InvalidConfiguration"))
 			g.Expect(ready.Message).To(ContainSubstring("invalid discovery configuration"))
 
 			// An untrustworthy evaluation never prunes children.
-			retained := f.getDevice(deviceIDGPU)
+			retained := f.getDevice(t, deviceIDGPU)
 			g.Expect(retained.Spec).To(Equal(spec))
-			g.Expect(f.client.deletes).To(BeEmpty())
 		})
 	}
 }
 
 // TestReconcileTransientErrors proves failed reads return errors for
-// backoff instead of being mistaken for authoritative absence.
+// backoff instead of being mistaken for authoritative absence. The node
+// list is failed through a standard fake-client interceptor; the
+// framework client converts typed lists to unstructured before they
+// reach the client, so the failure is keyed on the NodeList GVK.
 func TestReconcileTransientErrors(t *testing.T) {
 	nodeA := testNode(nodeAName, nodeAUID, nil)
 	single := testSingleton()
 
 	f := newFixture(t, single, nodeA)
+	g := NewWithT(t)
 	f.sources = []discovery.Source{&fakeSource{id: sourceIDDRA, plane: discovery.PlaneDRA}}
-	f.client.listNodesErr = errors.New("node list boom")
+	f.client = interceptor.NewClient(f.inner, interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			gvk := list.GetObjectKind().GroupVersionKind()
+			if gvk.Group == "" && gvk.Version == "v1" && gvk.Kind == "NodeList" {
+				return errors.New("node list boom")
+			}
+			return c.List(ctx, list, opts...)
+		},
+	})
 
-	_, err := f.reconciler().Reconcile(context.Background(), request())
-	f.g.Expect(err).To(HaveOccurred())
-	f.g.Expect(err.Error()).To(ContainSubstring("listing nodes"))
+	_, err := f.reconciler(t).Reconcile(context.Background(), request())
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("listing nodes"))
 }
 
 // TestReconcileIgnoresAbsentSingleton covers the reset path and foreign
-// request names: both are plain successes with no writes.
+// request names: both are plain successes, and the cluster state proves
+// the point — no singleton materializes and no device is fabricated.
 func TestReconcileIgnoresAbsentSingleton(t *testing.T) {
 	f := newFixture(t)
+	g := NewWithT(t)
 	f.sources = []discovery.Source{&fakeSource{id: sourceIDDRA, plane: discovery.PlaneDRA}}
 
-	f.mustReconcile()
-	f.g.Expect(f.client.updates).To(BeEmpty())
-	f.g.Expect(f.client.statusUpdates).To(BeEmpty())
+	f.mustReconcile(t)
+
+	single := &infrastructurev1alpha1.HardwareDiscovery{}
+	err := f.client.Get(context.Background(), request().NamespacedName, single)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the singleton is never fabricated")
+	g.Expect(f.listDevices(t)).To(BeEmpty())
 
 	// A request for any other name is not ours to reconcile.
-	result, err := f.reconciler().Reconcile(context.Background(),
+	result, err := f.reconciler(t).Reconcile(context.Background(),
 		requestFor("something-else"))
-	f.g.Expect(err).NotTo(HaveOccurred())
-	f.g.Expect(result).To(Equal(ctrl.Result{}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
 }
 
 // request builds the singleton reconcile request.

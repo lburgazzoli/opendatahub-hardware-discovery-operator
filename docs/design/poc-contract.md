@@ -67,12 +67,37 @@ migration, conversion webhook or production upgrade path is provided, and
 no new management-state behavior is claimed. Recorded in the execution
 ledger.
 
-> **Implementation stage note (task 013):** as of this amendment's schema
-> commit, the APIs, generated CRDs and controller condition helpers carry
-> the framework contract, but the controllers still run their own
-> `Reconcile` loops and status updates; the action-pipeline migration and
-> framework-derived `Ready` land in the following controller tasks, and the
-> runtime wraps the manager in `framework/manager.New` afterwards.
+Amendment 5 (2026-11-07, user-directed, extends Amendment 4):
+**framework main pin and mandatory builder registration.** The framework
+dependency moves from the published `framework/v0.4.0` tag to the
+**immutable main snapshot
+`v0.4.1-0.20261105151519-69e52f844d32`** (commit
+`69e52f844d3209424d3c3d79910a25a304233b75`), gaining the
+`ReconcilerFor → ReconcilerBuilder → Build(ctx)` registration path.
+Both controllers must register through that builder path — production
+code never calls `ctrl.NewControllerManagedBy` or the native
+controller-runtime builder chain directly (the framework's internal use
+of them inside its `Build` is framework-owned). Scan serialization is
+expressed through the manager's `Controller` options: a positive
+`GroupKindConcurrency` entry keyed
+`"HardwareDiscovery.infrastructure.platform.opendatahub.io"` (verified
+**[source-inspected]** at controller-runtime `v0.25.2`: `doController`
+applies a positive per-kind entry before the global
+`MaxConcurrentReconciles` default), so the device controller keeps the
+global default. The event recorder is obtained as
+`mgr.GetEventRecorder(<controller name>)` (events.k8s.io). This
+anticipates the future ODH-operator module integration consuming the
+same framework. Recorded in the execution ledger.
+
+> **Implementation stage note (updated through task 016):** as of
+> Amendment 4's schema commit, the APIs, generated CRDs and controller
+> condition helpers carry the framework contract. The inventory
+> controller now registers through the framework builder
+> (`ReconcilerFor → ReconcilerBuilder → Build`, task 016) with
+> per-kind scan serialization via manager `Controller` options; the
+> device controller still runs its native registration until its
+> migration task (015), and the runtime's `framework/manager.New`
+> wrapper lands in the manager task (008).
 
 This document is the approved concrete PoC contract governing all service
 implementation (tasks 002+). The human approved it as proposed on 2026-11-06
@@ -127,7 +152,7 @@ All other content of this document was approved as proposed.
 | Kind node image | `kindest/node:v1.34.11` | **[executed]** serves `resource.k8s.io/v1` (DRA GA since Kubernetes 1.34, default-on) |
 | Gomega | `v1.44.0` | published (DB harness uses v1.42.1; we take current) |
 | gomega-matchers | `github.com/lburgazzoli/gomega-matchers v0.6.0` | published; jq/k8s/condition matchers used by controller tests |
-| odh-platform-utilities framework | `github.com/opendatahub-io/odh-platform-utilities/framework v0.4.0` (tag `framework/v0.4.0`, commit `fd6f202b`) | published **[executed]** via proxy.golang.org (amendment 4); separate module from root v0.6.0; requires k8s.io `v0.37.1` (compatible patch raise from v0.37.0) and controller-runtime `v0.25.1` (we keep `v0.25.2`) |
+| odh-platform-utilities framework | `github.com/opendatahub-io/odh-platform-utilities/framework v0.4.1-0.20261105151519-69e52f844d32` (commit `69e52f844d3209424d3c3d79910a25a304233b75`, main snapshot superseding the `framework/v0.4.0` tag of amendment 4) | published **[executed]** via proxy.golang.org (amendment 5); separate module from root v0.6.0; requires k8s.io `v0.37.1` (compatible patch raise from v0.37.0) and controller-runtime `v0.25.1` (we keep `v0.25.2`); promotes `go-logr` to a direct dependency |
 | odh-platform-tools (`make module-lint`) | `github.com/lburgazzoli/odh-platform-tools@v0.0.0-20261028215308-948ecd9b3ace` (immutable pseudo-version; repo has no tags) | proxy `@latest` resolves to exactly the inspected commit 948ecd9b |
 
 ### 2.3 Framework dependency decision

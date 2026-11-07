@@ -18,13 +18,13 @@ package inventory_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	. "github.com/onsi/gomega"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -35,8 +35,11 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/cache/informertest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	ctrlmanager "sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -127,137 +130,6 @@ func (s *fakeSource) Observe(context.Context, discovery.Identity) (discovery.Obs
 	return discovery.Observation{}, fmt.Errorf("fake source %q cannot observe", s.id)
 }
 
-// trackingClient records every primary-resource write and every
-// subresource write; write instrumentation, not resourceVersion
-// inference, proves no-op behavior.
-type trackingClient struct {
-	client.Client
-	creates       []string
-	updates       []string
-	deletes       []string
-	patches       []string
-	applies       []string
-	deleteAllOfs  []string
-	statusUpdates []string
-	listNodesErr  error
-}
-
-func (c *trackingClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
-	c.creates = append(c.creates, objectRef(obj))
-	return c.Client.Create(ctx, obj, opts...)
-}
-
-func (c *trackingClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
-	c.updates = append(c.updates, objectRef(obj))
-	return c.Client.Update(ctx, obj, opts...)
-}
-
-func (c *trackingClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
-	c.deletes = append(c.deletes, objectRef(obj))
-	return c.Client.Delete(ctx, obj, opts...)
-}
-
-func (c *trackingClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-	c.patches = append(c.patches, objectRef(obj))
-	return c.Client.Patch(ctx, obj, patch, opts...)
-}
-
-func (c *trackingClient) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
-	c.applies = append(c.applies, applyRef(obj))
-	return c.Client.Apply(ctx, obj, opts...)
-}
-
-func (c *trackingClient) DeleteAllOf(ctx context.Context, obj client.Object, opts ...client.DeleteAllOfOption) error {
-	c.deleteAllOfs = append(c.deleteAllOfs, objectRef(obj))
-	return c.Client.DeleteAllOf(ctx, obj, opts...)
-}
-
-func (c *trackingClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
-	// The framework client converts typed lists to unstructured before
-	// they reach this client, so the node list is detected by GVK, not
-	// by Go type.
-	if c.listNodesErr != nil {
-		gvk := list.GetObjectKind().GroupVersionKind()
-		if gvk.Group == "" && gvk.Version == "v1" && gvk.Kind == "NodeList" {
-			return c.listNodesErr
-		}
-	}
-	return c.Client.List(ctx, list, opts...)
-}
-
-func (c *trackingClient) Status() client.SubResourceWriter {
-	return &trackingStatusWriter{delegate: c.Client.Status(), recorded: &c.statusUpdates}
-}
-
-// reset clears the recorded writes between reconciliations.
-func (c *trackingClient) reset() {
-	c.creates = nil
-	c.updates = nil
-	c.deletes = nil
-	c.patches = nil
-	c.applies = nil
-	c.deleteAllOfs = nil
-	c.statusUpdates = nil
-}
-
-type trackingStatusWriter struct {
-	delegate client.SubResourceWriter
-	recorded *[]string
-}
-
-func (w *trackingStatusWriter) Create(
-	ctx context.Context,
-	obj client.Object,
-	subResource client.Object,
-	opts ...client.SubResourceCreateOption,
-) error {
-	*w.recorded = append(*w.recorded, objectRef(obj))
-	return w.delegate.Create(ctx, obj, subResource, opts...)
-}
-
-func (w *trackingStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
-	*w.recorded = append(*w.recorded, objectRef(obj))
-	return w.delegate.Update(ctx, obj, opts...)
-}
-
-func (w *trackingStatusWriter) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
-	*w.recorded = append(*w.recorded, objectRef(obj))
-	return w.delegate.Patch(ctx, obj, patch, opts...)
-}
-
-func (w *trackingStatusWriter) Apply(
-	ctx context.Context,
-	obj runtime.ApplyConfiguration,
-	opts ...client.SubResourceApplyOption,
-) error {
-	*w.recorded = append(*w.recorded, applyRef(obj))
-	return w.delegate.Apply(ctx, obj, opts...)
-}
-
-func objectRef(obj client.Object) string {
-	return fmt.Sprintf("%T/%s", obj, obj.GetName())
-}
-
-// applyRef renders an apply configuration as "Kind/name" for write
-// assertions; the concrete apply-configuration types are opaque, so the
-// reference is recovered from the applied JSON.
-func applyRef(obj runtime.ApplyConfiguration) string {
-	data, err := json.Marshal(obj)
-	if err != nil {
-		return fmt.Sprintf("%T", obj)
-	}
-	var ref struct {
-		Kind     string `json:"kind"`
-		Metadata struct {
-			Name string `json:"name"`
-		} `json:"metadata"`
-	}
-	if err := json.Unmarshal(data, &ref); err != nil {
-		return fmt.Sprintf("%T", obj)
-	}
-	return ref.Kind + "/" + ref.Metadata.Name
-}
-
 // fakeClock is the injected collector clock.
 type fakeClock struct {
 	now time.Time
@@ -267,17 +139,25 @@ func (c *fakeClock) Now() time.Time { return c.now }
 
 func (c *fakeClock) advance(d time.Duration) { c.now = c.now.Add(d) }
 
-// managerStub satisfies the framework reconciler's manager needs offline:
-// an instrumented client, the fixture scheme, a recording event recorder
-// and a dummy REST config — the discovery and dynamic clients built from
-// it are never dialed in tests.
+// managerStub satisfies the framework builder's manager needs offline: the
+// fake cluster client, the fixture scheme, a recording event recorder, a
+// dummy REST config — the discovery and dynamic clients built from it are
+// never dialed in tests — plus the registration surface the real
+// controller-runtime builder consumes: controller options, a logger, a
+// cache and Runnable capture. A fresh stub is created per registration so
+// controller restarts never collide on names.
 type managerStub struct {
 	ctrlmanager.Manager
 
-	client   client.Client
-	scheme   *runtime.Scheme
-	recorder ctrlrecorder.EventRecorder
-	config   *rest.Config
+	client           client.Client
+	scheme           *runtime.Scheme
+	recorder         ctrlrecorder.EventRecorder
+	config           *rest.Config
+	cache            cache.Cache
+	controllerOption ctrlconfig.Controller
+	logger           logr.Logger
+	addErr           error
+	runnables        []ctrlmanager.Runnable
 }
 
 func (m *managerStub) GetClient() client.Client { return m.client }
@@ -288,16 +168,32 @@ func (m *managerStub) GetEventRecorder(string) ctrlrecorder.EventRecorder { retu
 
 func (m *managerStub) GetConfig() *rest.Config { return m.config }
 
-// fixture wires a framework reconciler against a fake cluster, scripted
+func (m *managerStub) GetCache() cache.Cache { return m.cache }
+
+func (m *managerStub) GetControllerOptions() ctrlconfig.Controller { return m.controllerOption }
+
+func (m *managerStub) GetLogger() logr.Logger { return m.logger }
+
+func (m *managerStub) Add(r ctrlmanager.Runnable) error {
+	if m.addErr != nil {
+		return m.addErr
+	}
+	m.runnables = append(m.runnables, r)
+	return nil
+}
+
+// fixture wires a framework controller against a fake cluster, scripted
 // sources (or the production source factory over a reader of the same
-// cluster), a fake clock and a recording event recorder. A fresh
-// reconciler is built for every reconciliation, so controller restarts
-// are exercised for free.
+// cluster), a fake clock and a recording event recorder. The reconciler
+// is built through the production ReconcilerFor/Build path for every
+// reconciliation, so controller restarts are exercised for free. Tests
+// observe behavior through the objects in the fake cluster; scripted
+// read failures swap f.client for an interceptor-wrapped client. The
+// fixture holds no testing.T or gomega state: helpers take t
+// contextually and derive their gomega assertions from it.
 type fixture struct {
-	t             *testing.T
-	g             *WithT
 	inner         client.WithWatch
-	client        *trackingClient
+	client        client.Client
 	clock         *fakeClock
 	scheme        *runtime.Scheme
 	recorder      *events.FakeRecorder
@@ -317,7 +213,6 @@ func resourceSliceNodeName(obj client.Object) []string {
 
 func newFixture(t *testing.T, objs ...client.Object) *fixture {
 	t.Helper()
-	g := NewWithT(t)
 	scheme := testScheme(t)
 	inner := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -329,10 +224,8 @@ func newFixture(t *testing.T, objs ...client.Object) *fixture {
 		WithObjects(objs...).
 		Build()
 	return &fixture{
-		t:        t,
-		g:        g,
 		inner:    inner,
-		client:   &trackingClient{Client: inner},
+		client:   inner,
 		clock:    &fakeClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
 		scheme:   scheme,
 		recorder: &events.FakeRecorder{Events: make(chan string, 128)},
@@ -346,66 +239,88 @@ func (f *fixture) useRealSources(reader client.Reader) {
 	f.sourceFactory = inventory.NewSourceFactory(reader)
 }
 
-func (f *fixture) reconciler() *fwreconciler.Reconciler {
-	f.t.Helper()
+// newManager builds a fresh registration-capable manager stub over the
+// fixture's shared state. The controller options mirror the production
+// manager wiring (per-kind singleton serialization). Name validation is
+// skipped because the fixture registers a fresh, never-started
+// controller for every reconciliation while controller-runtime's name
+// registry is process-global and only releases the names of controllers
+// that actually started and stopped.
+func (f *fixture) newManager() *managerStub {
+	return &managerStub{
+		client:   f.client,
+		scheme:   f.scheme,
+		recorder: f.recorder,
+		config:   &rest.Config{Host: "https://127.0.0.1"},
+		cache:    &informertest.FakeInformers{Scheme: f.scheme},
+		controllerOption: inventory.ManagerControllerOptions(ctrlconfig.Controller{
+			SkipNameValidation: new(true),
+		}),
+		logger: logr.Discard(),
+	}
+}
+
+// controller builds the production controller over the fixture's source
+// wiring and clock.
+func (f *fixture) controller() *inventory.Controller {
 	factory := f.sourceFactory
 	if factory == nil {
 		factory = func(infrastructurev1alpha1.DiscoverySources) (discovery.Sources, error) {
 			return discovery.NewSources(f.sources...)
 		}
 	}
-	r, err := (&inventory.Controller{
+	return &inventory.Controller{
 		Sources: factory,
 		Clock:   f.clock.Now,
-	}).NewReconciler(&managerStub{
-		client:   f.client,
-		scheme:   f.scheme,
-		recorder: f.recorder,
-		config:   &rest.Config{Host: "https://127.0.0.1"},
-	})
+	}
+}
+
+func (f *fixture) reconciler(t *testing.T) *fwreconciler.Reconciler {
+	t.Helper()
+	r, err := f.controller().NewReconciler(context.Background(), f.newManager())
 	if err != nil {
-		f.t.Fatalf("fixture: building inventory reconciler: %v", err)
+		t.Fatalf("fixture: building inventory reconciler: %v", err)
 	}
 	return r
 }
 
 // mustReconcile runs one scan and fails the test on transient errors.
-func (f *fixture) mustReconcile() ctrl.Result {
-	f.t.Helper()
-	result, err := f.reconciler().Reconcile(context.Background(),
+func (f *fixture) mustReconcile(t *testing.T) ctrl.Result {
+	t.Helper()
+	result, err := f.reconciler(t).Reconcile(context.Background(),
 		reconcile.Request{NamespacedName: types.NamespacedName{Name: inventory.SingletonName}})
-	f.g.ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	NewWithT(t).ExpectWithOffset(1, err).NotTo(HaveOccurred())
 	return result
 }
 
-func (f *fixture) getSingleton() *infrastructurev1alpha1.HardwareDiscovery {
-	f.t.Helper()
+func (f *fixture) getSingleton(t *testing.T) *infrastructurev1alpha1.HardwareDiscovery {
+	t.Helper()
 	single := &infrastructurev1alpha1.HardwareDiscovery{}
-	f.g.ExpectWithOffset(1, f.client.Get(context.Background(),
+	NewWithT(t).ExpectWithOffset(1, f.client.Get(context.Background(),
 		client.ObjectKey{Name: inventory.SingletonName}, single)).To(Succeed())
 	return single
 }
 
-func (f *fixture) getDevice(name string) *infrastructurev1alpha1.HardwareDevice {
-	f.t.Helper()
+func (f *fixture) getDevice(t *testing.T, name string) *infrastructurev1alpha1.HardwareDevice {
+	t.Helper()
 	device := &infrastructurev1alpha1.HardwareDevice{}
-	f.g.ExpectWithOffset(1, f.client.Get(context.Background(),
+	NewWithT(t).ExpectWithOffset(1, f.client.Get(context.Background(),
 		client.ObjectKey{Name: name}, device)).To(Succeed())
 	return device
 }
 
-func (f *fixture) deviceMissing(name string) {
-	f.t.Helper()
+func (f *fixture) deviceMissing(t *testing.T, name string) {
+	t.Helper()
 	err := f.client.Get(context.Background(),
 		client.ObjectKey{Name: name}, &infrastructurev1alpha1.HardwareDevice{})
-	f.g.ExpectWithOffset(1, apierrors.IsNotFound(err)).To(BeTrue(),
+	NewWithT(t).ExpectWithOffset(1, apierrors.IsNotFound(err)).To(BeTrue(),
 		"expected hardware device %q to be missing, got %v", name, err)
 }
 
-func (f *fixture) listDevices() []infrastructurev1alpha1.HardwareDevice {
-	f.t.Helper()
+func (f *fixture) listDevices(t *testing.T) []infrastructurev1alpha1.HardwareDevice {
+	t.Helper()
 	list := &infrastructurev1alpha1.HardwareDeviceList{}
-	f.g.ExpectWithOffset(1, f.client.List(context.Background(), list)).To(Succeed())
+	NewWithT(t).ExpectWithOffset(1, f.client.List(context.Background(), list)).To(Succeed())
 	return list.Items
 }
 
