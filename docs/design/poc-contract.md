@@ -491,6 +491,20 @@ Observation (device controller, per device):
 4. `Observe` errors surface as device conditions (`SourceUnavailable`) and
    never delete facts; NotFound of the device itself is reconcile success.
 
+Status-write incarnation semantics (amendment, 2026-11-07, user-directed):
+the framework persists device status through server-side apply without an
+optimistic-concurrency precondition, so a stale-copy observation can
+transiently land on a same-name replacement created while an observation
+was in flight. This is accepted eventual consistency, not a bug: the
+replacement's creation reconciles within one pass and overwrites the
+transferred status with its own observation or its failure condition;
+same-name recreation is same-identity by the name-resolution design; and
+every reconcile revalidates the spec identity against the live cluster
+(host UID, class, source enablement, locator) before observing. The
+steady-state guarantee — status describes the last evaluation of the
+current incarnation — is upheld by convergence, not by an atomic
+per-write guard.
+
 Deletion:
 - Authoritative disappearance (successful empty enumeration) → prune owned
   objects (after §11 grace when the trigger is node absence/UID change).
