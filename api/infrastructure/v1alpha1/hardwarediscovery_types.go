@@ -99,10 +99,10 @@ type DiscoverySources struct {
 	// +optional
 	DRA *DRASourceConfig `json:"dra,omitempty"`
 
-	// simulator configures the opt-in, PoC-only fake-gpu-operator classic
-	// source adapter. It is disabled by default.
+	// classic configures the classic labels source (GFD-style node labels
+	// plus node extended resources).
 	// +optional
-	Simulator *SimulatorSourceConfig `json:"simulator,omitempty"`
+	Classic *ClassicSourceConfig `json:"classic,omitempty"`
 }
 
 // DRASourceConfig configures the stable DRA source.
@@ -119,29 +119,22 @@ type DRASourceConfig struct {
 	DriverAllowList []string `json:"driverAllowList,omitempty"`
 }
 
-// SimulatorSourceConfig configures the opt-in classic PoC source adapter that
-// reads the fake-gpu-operator per-node topology ConfigMaps.
-// +kubebuilder:validation:XValidation:rule="!(has(self.enabled) && self.enabled) || (has(self.namespace) && size(self.namespace) > 0)",message="namespace is required when the simulator source is enabled"
-type SimulatorSourceConfig struct {
-	// enabled turns the simulator source on. It is opt-in and defaults to
-	// false: it demonstrates discovery control flow, not production classic
-	// hardware discovery.
-	// +kubebuilder:default=false
+// ClassicSourceConfig configures the classic labels source. The source is
+// enabled by default: its node claims stay evidence-gated (the configured
+// resource name in node allocatable/capacity plus GFD-style labels), so
+// enabling it never fabricates devices on non-GPU nodes.
+type ClassicSourceConfig struct {
+	// enabled turns the classic labels source on or off.
+	// +kubebuilder:default=true
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// namespace is the only namespace whose ConfigMaps the adapter reads.
-	// It is required when the simulator source is enabled.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
+	// resourceName is the extended resource whose presence in node
+	// allocatable or capacity is classic-plane evidence.
+	// +kubebuilder:default=nvidia.com/gpu
+	// +kubebuilder:validation:Pattern=`^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*\/)?[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	// +optional
-	Namespace string `json:"namespace,omitempty"`
-
-	// configMapPrefix is the fake-gpu-operator topology ConfigMap name
-	// prefix (the chart's TOPOLOGY_CM_NAME).
-	// +kubebuilder:default=topology
-	// +optional
-	ConfigMapPrefix string `json:"configMapPrefix,omitempty"`
+	ResourceName string `json:"resourceName,omitempty"`
 }
 
 // HardwareDiscoveryStatus is the observed state of the singleton: collector

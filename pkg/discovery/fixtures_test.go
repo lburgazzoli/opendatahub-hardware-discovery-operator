@@ -37,44 +37,70 @@ const (
 	otherNode        = "gpu-node-b"
 	otherUID         = types.UID("22222222-2222-2222-2222-222222222222")
 	nvidiaDriver     = "gpu.nvidia.com"
-	simulatorNS      = "gpu-operator"
-	simulatorCM      = "topology-gpu-node-a"
+	classicDeviceID  = "gpu-node-a-gpu-0"
+	draSourceID      = "dra"
+	classicSourceID  = "classic"
 	acceleratorClass = "accelerator"
 	teslaK80         = "Tesla-K80"
 	collideID        = "GPU-1"
 	collideIDVariant = "GPU_1"
 )
 
-// draLocator is a valid DRA arm fixture.
+// fakeLocator is a test-local Locator implementation proving the pluggable
+// interface contract without depending on any source package: the core
+// tests exercise locators as opaque values.
+type fakeLocator struct {
+	kind    string
+	ref     string
+	invalid error // when set, Validate fails with this error
+}
+
+func (l fakeLocator) Kind() string { return l.kind }
+func (l fakeLocator) Validate() error {
+	if l.invalid != nil {
+		return l.invalid
+	}
+	return nil
+}
+func (l fakeLocator) Equal(other discovery.Locator) bool {
+	o, ok := other.(fakeLocator)
+	return ok && l == o
+}
+func (l fakeLocator) Ref() string { return l.ref }
+
+// draLocator is a valid DRA locator fixture.
 func draLocator() discovery.Locator {
-	return discovery.Locator{
-		DRA: &discovery.DRALocator{
-			Driver: nvidiaDriver,
-			Pool:   nodeName,
-			Device: deviceID,
-		},
-	}
+	return fakeLocator{kind: draSourceID, ref: nvidiaDriver + "/" + nodeName}
 }
 
-// simulatorLocator is a valid simulator arm fixture.
-func simulatorLocator() discovery.Locator {
-	return discovery.Locator{
-		Simulator: &discovery.SimulatorLocator{
-			Namespace: simulatorNS,
-			ConfigMap: simulatorCM,
-			ID:        deviceID,
-		},
-	}
+// classicLocator is a valid classic labels locator fixture.
+func classicLocator() discovery.Locator {
+	return fakeLocator{kind: classicSourceID, ref: nodeName}
 }
 
-// validIdentity is a complete, contract-valid identity fixture.
+// validIdentity is a complete, contract-valid identity fixture (a real
+// vendor UUID identity, as discovered by the DRA source).
 func validIdentity() discovery.Identity {
 	return discovery.Identity{
 		ID:       deviceID,
+		Kind:     discovery.IdentityKindUUID,
 		NodeName: nodeName,
 		NodeUID:  nodeUID,
 		Plane:    discovery.PlaneDRA,
 		Locator:  draLocator(),
+	}
+}
+
+// nodeIndexIdentity is a complete, contract-valid synthetic identity
+// fixture (as discovered by the classic labels source).
+func nodeIndexIdentity() discovery.Identity {
+	return discovery.Identity{
+		ID:       classicDeviceID,
+		Kind:     discovery.IdentityKindNodeIndex,
+		NodeName: nodeName,
+		NodeUID:  nodeUID,
+		Plane:    discovery.PlaneClassic,
+		Locator:  classicLocator(),
 	}
 }
 

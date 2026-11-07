@@ -65,11 +65,12 @@ const (
 )
 
 // IdentityKey is the deterministic matching key of one device incarnation:
-// the physical device id paired with the hosting Node UID. The host UID
-// cannot be dropped from matching — the same id observed on a new Node UID
-// is a new incarnation (design doc §10), never an in-place transfer.
+// the device id — vendor UUID or node-scoped synthetic id — paired with
+// the hosting Node UID. The host UID cannot be dropped from matching: the
+// same id observed on a new Node UID is a new incarnation (design doc
+// §10), never an in-place transfer.
 type IdentityKey struct {
-	// ID is the physical or simulated device id.
+	// ID is the device id (vendor UUID or node-scoped synthetic id).
 	ID string
 	// NodeUID is the UID of the hosting Node incarnation.
 	NodeUID types.UID

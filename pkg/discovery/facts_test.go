@@ -119,13 +119,23 @@ func TestObservationEqual(t *testing.T) {
 		g.Expect(discovery.ObservationEqual(base, changedPlane)).To(BeFalse())
 
 		changedLocator := base
-		changedLocator.Identity.Locator = draLocator()
-		changedLocator.Identity.Locator.DRA.Pool = otherNode
+		changedLocator.Identity.Locator = fakeLocator{kind: draSourceID, ref: nvidiaDriver + "/" + otherNode}
 		g.Expect(discovery.ObservationEqual(base, changedLocator)).To(BeFalse())
 
 		changedArm := base
-		changedArm.Identity.Locator = simulatorLocator()
+		changedArm.Identity.Locator = classicLocator()
 		g.Expect(discovery.ObservationEqual(base, changedArm)).To(BeFalse())
+
+		changedKind := base
+		changedKind.Identity.Kind = discovery.IdentityKindNodeIndex
+		g.Expect(discovery.ObservationEqual(base, changedKind)).To(BeFalse())
+
+		// A missing locator differs from a present one, and two missing
+		// locators compare nil-safely.
+		noLocator := base
+		noLocator.Identity.Locator = nil
+		g.Expect(discovery.ObservationEqual(base, noLocator)).To(BeFalse())
+		g.Expect(discovery.ObservationEqual(noLocator, noLocator)).To(BeTrue())
 
 		reincarnated := base
 		reincarnated.Identity.NodeUID = otherUID

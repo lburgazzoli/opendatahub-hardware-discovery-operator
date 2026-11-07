@@ -21,104 +21,47 @@ import (
 	"fmt"
 )
 
-// Locator is the frozen, source-owned union stored verbatim in spec.source
-// (design doc §7). Exactly one arm is set; source refs identify real input
-// objects, never an inferred registry.
-type Locator struct {
-	DRA       *DRALocator       `json:"dra,omitempty"`
-	Simulator *SimulatorLocator `json:"simulator,omitempty"`
+// Locator is the pluggable, source-owned locator stored in spec.source
+// (design doc §7, amendments 2+3). Each source package implements it for
+// its own locator shape; the core never enumerates source kinds. The
+// implementation's Kind must match the spec.source.kind arm that carries
+// the locator, and source implementations are expected to map their
+// locator to and from that arm themselves.
+type Locator interface {
+	// Kind is the registered source kind that owns this locator (for
+	// example "dra" or "classic").
+	Kind() string
+	// Validate checks the locator's required fields.
+	Validate() error
+	// Equal reports deep equality with another locator. It never mutates
+	// the caller's values; locators of different kinds are never equal.
+	Equal(Locator) bool
+	// Ref renders the locator's provenance suffix (design doc §4.2), for
+	// example "gpu.nvidia.com/<pool>" or "<node>".
+	Ref() string
 }
 
-// DRALocator locates a device in a stable resource.k8s.io/v1 ResourceSlice
-// advertisement.
-type DRALocator struct {
-	// Driver is the DRA driver that advertised the device (for example
-	// gpu.nvidia.com).
-	Driver string
-	// Pool is the ResourceSlice pool.name the device was advertised in.
-	Pool string
-	// Device is the ResourceSlice device.name of this device.
-	Device string
-}
-
-// SimulatorLocator locates a device in the Run:ai fake-gpu-operator
-// per-node topology ConfigMap. It exists only for the opt-in, PoC-only
-// classic simulator adapter.
-type SimulatorLocator struct {
-	// Namespace is the only namespace whose ConfigMaps the adapter reads.
-	Namespace string
-	// ConfigMap is the per-node topology ConfigMap name
-	// (topology-<node> by convention).
-	ConfigMap string
-	// ID is the synthetic device id inside the ConfigMap; it always
-	// equals the identity id.
-	ID string
-}
-
-// Locator validation sentinels.
+// Locator validation sentinels. Source implementations own their Validate
+// methods and are expected to wrap these sentinels so callers can classify
+// results with errors.Is.
 var (
-	// ErrNoLocator reports a locator with no arm set.
-	ErrNoLocator = errors.New("discovery: source locator has no arm set")
+	// ErrNoLocator reports a missing locator: every identity carries one.
+	ErrNoLocator = errors.New("discovery: source locator is missing")
 
-	// ErrAmbiguousLocator reports a locator with more than one arm set.
-	ErrAmbiguousLocator = errors.New("discovery: source locator has more than one arm set")
-
-	// ErrIncompleteLocator reports a locator arm missing a required
-	// field.
+	// ErrIncompleteLocator reports a locator missing a required field.
 	ErrIncompleteLocator = errors.New("discovery: source locator is missing a required field")
 )
 
-// Validate checks the exactly-one-arm invariant and the required arm
-// fields.
-func (l Locator) Validate() error {
-	switch {
-	case l.DRA == nil && l.Simulator == nil:
-		return ErrNoLocator
-	case l.DRA != nil && l.Simulator != nil:
-		return ErrAmbiguousLocator
-	case l.DRA != nil:
-		if l.DRA.Driver == "" || l.DRA.Pool == "" || l.DRA.Device == "" {
-			return fmt.Errorf("%w: dra locator", ErrIncompleteLocator)
-		}
-	default:
-		if l.Simulator.Namespace == "" || l.Simulator.ConfigMap == "" || l.Simulator.ID == "" {
-			return fmt.Errorf("%w: simulator locator", ErrIncompleteLocator)
-		}
-	}
-	return nil
-}
-
-// Equal reports deep equality of two locators. It never mutates the
-// caller-owned values.
-func (l Locator) Equal(other Locator) bool {
-	switch {
-	case l.DRA != nil || other.DRA != nil:
-		if l.DRA == nil || other.DRA == nil {
-			return false
-		}
-		return *l.DRA == *other.DRA
-	case l.Simulator != nil || other.Simulator != nil:
-		if l.Simulator == nil || other.Simulator == nil {
-			return false
-		}
-		return *l.Simulator == *other.Simulator
-	default:
-		return true
-	}
-}
-
 // SourceRef builds the provenance reference for a source and locator
-// (design doc §4.2/§7): "<id>/<driver>/<pool>" for a DRA locator and
-// "<id>/<namespace>/<configMap>" for a simulator locator — for example
-// "dra/gpu.nvidia.com/gpu-node-a" or
-// "simulator/gpu-operator/topology-gpu-node-a". The reference is replaced,
-// never merged, on an observed source change.
+// (design doc §4.2/§7): "<source-id>/<locator ref>" — for example
+// "dra/gpu.nvidia.com/gpu-node-a" or "classic/gpu-node-a". The reference is
+// replaced, never merged, on an observed source change.
 func SourceRef(sourceID string, l Locator) (string, error) {
+	if l == nil {
+		return "", ErrNoLocator
+	}
 	if err := l.Validate(); err != nil {
 		return "", err
 	}
-	if l.DRA != nil {
-		return fmt.Sprintf("%s/%s/%s", sourceID, l.DRA.Driver, l.DRA.Pool), nil
-	}
-	return fmt.Sprintf("%s/%s/%s", sourceID, l.Simulator.Namespace, l.Simulator.ConfigMap), nil
+	return fmt.Sprintf("%s/%s", sourceID, l.Ref()), nil
 }

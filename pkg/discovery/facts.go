@@ -45,16 +45,26 @@ func (a AcceleratorFacts) Equal(b AcceleratorFacts) bool {
 }
 
 // ObservationEqual reports whether a and b carry the same observable state
-// — the same proven identity (device id and host UID), the same allocation
-// plane, the same source locator and the same facts — deliberately
-// excluding CollectedAt (design doc §10.1): a freshly stamped identical
-// observation is not a facts change. Heartbeat-driven status writes for
-// unchanged observations are decided by the caller against its injected
-// clock, not by this comparison.
+// — the same proven identity (device id and host UID), the same identity
+// kind, the same allocation plane, the same source locator and the same
+// facts — deliberately excluding CollectedAt (design doc §10.1): a freshly
+// stamped identical observation is not a facts change. Heartbeat-driven
+// status writes for unchanged observations are decided by the caller
+// against its injected clock, not by this comparison.
 func ObservationEqual(a, b Observation) bool {
 	return a.Identity.ID == b.Identity.ID &&
 		a.Identity.NodeUID == b.Identity.NodeUID &&
+		a.Identity.Kind == b.Identity.Kind &&
 		a.Identity.Plane == b.Identity.Plane &&
-		a.Identity.Locator.Equal(b.Identity.Locator) &&
+		locatorEqual(a.Identity.Locator, b.Identity.Locator) &&
 		a.Facts.Equal(b.Facts)
+}
+
+// locatorEqual compares two locators nil-safely: a missing locator never
+// equals a present one, and present locators decide via their own Equal.
+func locatorEqual(a, b Locator) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(b)
 }

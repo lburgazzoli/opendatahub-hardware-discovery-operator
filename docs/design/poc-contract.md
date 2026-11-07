@@ -12,6 +12,35 @@ and would be a breaking move when the `network` class arrives; the change was
 made before any status-writing controller or consumer existed. Recorded in
 the execution ledger.
 
+Amendment 2 (2026-11-07, user-directed): **pluggable sources — no simulator
+code in production.** The core `pkg/discovery` no longer enumerates source
+kinds: `Locator` is an interface implemented by each source package, plane
+resolution is a source-driven priority fold (each source owns its node-claim
+rule; `PlaneEvidence` is deleted), and sources are registered in an ordered
+registry. The CRD arm is renamed `simulator` → **`classic`**
+(`spec.source.classic`, `spec.sources.classic`) after the allocation plane
+it evidences. Recorded in the execution ledger.
+
+Amendment 3 (2026-11-07, user-directed, supersedes the classic-source parts
+of amendment 2): **classic discovery is a production source reading node
+labels — the FGO ConfigMap concept is deleted entirely.** The controller
+discovers accelerators on DRA nodes (ResourceSlices, per-device UUID) and on
+pre-DRA/classic nodes (GFD-style node labels + node allocatable, both real
+inputs that exist on today's fleet). Consequences: (a) the plan's
+no-fabricated-identity rule is deliberately relaxed by user decision —
+classic devices get a **synthetic node-scoped identity**
+`spec.identity.id = <node-name>-gpu-<index>` (deterministic, ≤63 chars with
+hash-truncation, dies with the node incarnation) and a new immutable
+`spec.identity.kind: uuid|nodeIndex` distinguishes real vendor identity
+from synthetic node-scoped identity; (b) the classic source locator is
+`spec.source.classic{node, index}`; (c) the classic source is registered by
+the production binary alongside DRA (default enabled; claims remain
+evidence-gated); (d) the e2e classic scenario applies GFD-style labels as
+scenario data — the controller reads exactly what a real classic cluster
+publishes, with zero simulator awareness on either plane. The partial
+ConfigMap-based classic adapter work is discarded. Recorded in the
+execution ledger.
+
 This document is the approved concrete PoC contract governing all service
 implementation (tasks 002+). The human approved it as proposed on 2026-11-06
 in the execution session, resolving the gate choices as recorded in §1 —
@@ -101,13 +130,16 @@ opendatahub-hardware-discovery-operator/
 │   ├── hardwarediscovery/          # singleton/module controller (identity, spec, lifecycle)
 │   └── hardwaredevice/             # per-device controller (status-only writer)
 ├── pkg/discovery/                  # core normalization; NO controller/CLI imports
-│   ├── source.go                   # Source interface, DTOs, Outcome enum
-│   ├── locator.go                  # Locator union (dra | simulator)
+│   ├── source.go                   # Source interface, DTOs, Outcome enum, ordered source registry
+│   ├── locator.go                  # Locator interface (Kind/Validate/Equal/Ref)
 │   ├── identity.go                 # name derivation, sanitization, collision guards
 │   ├── facts.go                    # Facts, equality (excludes timestamps)
-│   └── plane.go                    # plane resolution / dominance rules
+│   └── plane.go                    # source-driven node-claim fold (SelectNode)
 ├── pkg/discovery/dra/              # stable resource.k8s.io/v1 NVIDIA adapter
-├── pkg/discovery/classic/          # FGO simulator adapter (opt-in, PoC-only)
+│                                   #   (production source; DRALocator, claim rule,
+│                                   #    pool completeness, uuid identity)
+├── pkg/discovery/classic/          # classic labels source (production; GFD-style
+│                                   #   node labels + allocatable, nodeIndex identity)
 ├── test/support/cluster/           # task 010: Kind lifecycle (Instance/Config/Setup/Stop)
 ├── test/e2e/                       # task 010/011: two-plane suite (build tag)
 ├── config/                         # Kustomize generation input (scaffold output)
@@ -133,16 +165,17 @@ simulator's private details (ConfigMap names, YAML keys) exist only in
 | JSON path | Type | Required | Validation | Notes |
 |---|---|---|---|---|
 | `spec.class` | string | yes | enum `[accelerator]`; CEL `self == oldSelf` (immutable) | sole class in the PoC; additive growth = new enum values + new optional sibling structs, never a catch-all |
-| `spec.identity.id` | string | yes | minLength 1, maxLength 63; CEL `self == oldSelf` | physical/simulated device ID (NVIDIA GPU UUID); never derived from counts or list indexes |
+| `spec.identity.kind` | string | yes | enum `[uuid, nodeIndex]`; CEL `self == oldSelf` | honesty field: `uuid` = real vendor identity (DRA); `nodeIndex` = synthetic node-scoped identity (classic labels) — not joinable with telemetry/DCGM, index-based |
+| `spec.identity.id` | string | yes | minLength 1, maxLength 63; CEL `self == oldSelf` | vendor device ID (GPU UUID) for `kind: uuid`; deterministic `<node-name>-gpu-<index>` (hash-truncated to 63) for `kind: nodeIndex`; never derived from list indexes of an unbounded source |
 | `spec.host.name` | string | yes | minLength 1 | Node name at discovery time |
 | `spec.host.uid` | string | yes | minLength 1; CEL `self == oldSelf` | Node UID; node replacement = delete + recreate (§11), never an in-place UID transfer |
-| `spec.source.dra` | object | exactly one of `dra`/`simulator` (CEL) | see below | DRA locator |
+| `spec.source.kind` | string | yes | enum `[dra, classic]`; must match the set arm (CEL) | registered source kind that owns this locator; the production binary registers `dra` only — `classic` exists for the classic-plane test source (§9) |
+| `spec.source.dra` | object | exactly one of `dra`/`classic` (CEL), matching `kind` | see below | DRA locator |
 | `spec.source.dra.driver` | string | yes | enum-extended allow-list, default pin `gpu.nvidia.com` | |
 | `spec.source.dra.pool` | string | yes | minLength 1 | ResourceSlice `pool.name` |
 | `spec.source.dra.device` | string | yes | minLength 1 | ResourceSlice `device.name` |
-| `spec.source.simulator.namespace` | string | yes | DNS namespace | FGO simulator namespace (opt-in profile only) |
-| `spec.source.simulator.configMap` | string | yes | `topology-<node>` by convention | |
-| `spec.source.simulator.id` | string | yes | matches `spec.identity.id` | |
+| `spec.source.classic.node` | string | yes | equals `spec.host.name` (CEL) | the Node whose labels describe this device |
+| `spec.source.classic.index` | int32 | yes | minimum 0 | the device's index within the node's `gpu.count`; stable for the node incarnation |
 
 ### 4.2 Status
 
@@ -154,7 +187,7 @@ simulator's private details (ConfigMap names, YAML keys) exist only in
 | `status.accelerator.memory` | `resource.Quantity` | pattern `^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$`; FGO MiB → bytes, BinarySI |
 | `status.allocationPlane` | string, enum `[classic, dra]` | which plane evidenced the device |
 | `status.collectedAt` | `metav1.Time` | collector observation clock; never copied from the producer |
-| `status.sourceRef` | string | provenance, e.g. `dra/gpu.nvidia.com/<pool>` or `simulator/<ns>/<cm>`; replaced, not merged, on observed source change |
+| `status.sourceRef` | string | provenance, e.g. `dra/gpu.nvidia.com/<pool>` or `classic/<ns>/<cm>`; replaced, not merged, on observed source change |
 | `status.conditions` | `[]metav1.Condition` | device observation conditions (§7.4) |
 | `status.observedGeneration` | int64 | |
 
@@ -193,6 +226,7 @@ spec:
     name: gpu-node-a
     uid: 11111111-1111-1111-1111-111111111111
   source:
+    kind: dra
     dra:
       driver: gpu.nvidia.com
       pool: gpu-node-a
@@ -203,8 +237,7 @@ status:
     memory: 12635713536
   allocationPlane: dra
   collectedAt: "2026-11-06T15:32:31Z"
-  sourceRef: dra/gpu.nvidia.com/gpu-node-a
-  conditions:
+  sourceRef: dra/gpu.nvidia.com/gpu-node-a  conditions:
   - type: Observed
     status: "True"
     reason: Observed
@@ -260,11 +293,10 @@ arm is a reviewed schema change, not a silent reopening.
 | `spec.maxStale` | `metav1.Duration` | `10m` | heartbeat bound for unchanged facts; pattern `^([0-9]+(s|m|h))+$` |
 | `spec.rescanPeriod` | `metav1.Duration` | `5m` | bounded periodic rescan even without input events |
 | `spec.nodeGracePeriod` | `metav1.Duration` | `15m` | orphan grace for absent/UID-changed nodes |
-| `spec.sources.dra.enabled` | bool | `true` | stable DRA source |
+| `spec.sources.dra.enabled` | bool | `true` | stable DRA source — the only source registered by the production binary |
 | `spec.sources.dra.driverAllowList` | []string | `["gpu.nvidia.com"]` | whole-GPU advertisements only from these drivers |
-| `spec.sources.simulator.enabled` | bool | `false` | **opt-in** classic PoC adapter; default off |
-| `spec.sources.simulator.namespace` | string | required when enabled | the only namespace whose ConfigMaps are read |
-| `spec.sources.simulator.configMapPrefix` | string | `topology` | FGO `TOPOLOGY_CM_NAME` |
+| `spec.sources.classic.enabled` | bool | `true` | classic labels source — production source, registered alongside DRA; claims remain evidence-gated (extended-resource + GFD labels present), so enabling it never fabricates devices on non-GPU nodes |
+| `spec.sources.classic.resourceName` | string | `nvidia.com/gpu` | the extended resource whose presence in node allocatable/capacity is classic-plane evidence |
 
 Root-schema CEL (validated **[executed]**):
 `self.metadata.name == 'cluster'` — the singleton cannot be created under
@@ -424,13 +456,20 @@ and we do not pretend otherwise.
 
 ## 7. Source DTO contract (frozen at this gate)
 
-All types live in `pkg/discovery`; adapters never construct
-`HardwareDevice` Kubernetes objects — the mapping to
-`HardwareDeviceStatus` happens once, in the device controller.
+All types live in `pkg/discovery` (core) and the source packages; adapters
+never construct `HardwareDevice` Kubernetes objects — the mapping to
+`HardwareDeviceStatus` happens once, in the device controller. **The core is
+source-agnostic (amendments 2+3): it never enumerates source kinds, planes
+or input types.**
 
 ```go
 // Plane is the allocation plane that evidenced a device.
 type Plane string // "classic" | "dra"
+
+// IdentityKind distinguishes real vendor identity from synthetic
+// node-scoped identity (amendment 3): "uuid" (DRA) vs "nodeIndex"
+// (classic labels). It is persisted as spec.identity.kind.
+type IdentityKind string
 
 // Outcome distinguishes authoritative results from unknown ones.
 type Outcome string
@@ -439,30 +478,39 @@ const (
     OutcomeUnknown Outcome = "Unknown" // error / missing API / forbidden / incomplete pool
 )
 
-// Locator is the frozen, source-owned union stored verbatim in spec.source.
-type Locator struct {
-    DRA       *DRALocator       `json:"dra,omitempty"`
-    Simulator *SimulatorLocator `json:"simulator,omitempty"`
+// Locator is the pluggable, source-owned locator stored in spec.source.
+// Each source package implements it for its own locator shape; the core
+// never enumerates kinds.
+type Locator interface {
+    // Kind is the registered source kind ("dra", "classic", ...); it must
+    // match the spec.source.kind arm that carries this locator.
+    Kind() string
+    // Validate checks the locator's required fields.
+    Validate() error
+    // Equal reports deep equality; it never mutates the caller's values.
+    Equal(Locator) bool
+    // Ref renders the locator's provenance suffix, e.g.
+    // "gpu.nvidia.com/<pool>" or "<node>".
+    Ref() string
 }
-type DRALocator       struct{ Driver, Pool, Device string }
-type SimulatorLocator struct{ Namespace, ConfigMap, ID string }
 
 // Identity is a discovered device identity plus how to re-observe it.
 type Identity struct {
-    ID       string      // physical/simulated device ID (GPU UUID)
+    ID       string       // vendor UUID (kind uuid) or <node>-gpu-<index> (kind nodeIndex)
+    Kind     IdentityKind // uuid | nodeIndex
     NodeName string
     NodeUID  types.UID
     Plane    Plane
     Locator  Locator
 }
 
-// Facts are the minimal supported observations, organized per device class
-// exactly like the HardwareDevice status; absent = omitted, never zero.
+// Facts are the minimal supported observations (per-class union; absent =
+// omitted, never zero).
 type Facts struct {
-    Accelerator *AcceleratorFacts // nil when no accelerator facts observed
+    Accelerator *AcceleratorFacts
 }
 type AcceleratorFacts struct {
-    Vendor string            // optional, omitted when unsupported
+    Vendor string
     Model  string
     Memory *resource.Quantity
 }
@@ -481,16 +529,49 @@ type Observation struct {
     CollectedAt time.Time // collector clock, stamped at observation
 }
 
+// Source is a discovery source plugin. Each implementation owns its
+// locator type, its input reading (via injected read-only clients), its
+// node-claim rule and its facts parsing; the core folds claiming sources
+// by priority.
 type Source interface {
     ID() string
     Plane() Plane
+    // ClaimsNode reports whether this source claims the node for
+    // discovery. The claim rule is source knowledge: the DRA source
+    // claims nodes with allow-listed advertisements (even while
+    // incomplete); the classic source claims nodes with classic
+    // extended-resource evidence plus GFD-style labels. Unclaimed nodes
+    // are unknown for this source — never an authoritative empty set.
+    ClaimsNode(ctx context.Context, node NodeInfo) bool
     // Enumerate: identities for the given nodes. Empty+Success prunes;
     // Unknown preserves all prior state.
     Enumerate(ctx context.Context, nodes []NodeInfo) (Enumeration, error)
     // Observe: resolve one previously enumerated identity into facts.
     Observe(ctx context.Context, id Identity) (Observation, error)
 }
+
+// Sources is the ordered source registry (priority = order; DRA registers
+// before classic so DRA claims win). Duplicate kinds are rejected at
+// registration.
+type Sources struct{ /* ordered []Source */ }
+
+// SelectNode folds the per-source node decisions in priority order: the
+// first source that claims the node decides (its enumeration's Outcome
+// governs — Success is authoritative even when empty, Unknown retains).
+// When no registered source claims the node, the selection is Unknown
+// with ErrNoPlaneEvidence — unknown, never zero devices.
+func SelectNode(node NodeInfo, sources Sources, enumerated map[string]Enumeration) NodeSelection
 ```
+
+Locator implementations (both production): `pkg/discovery/dra.DRALocator
+{Driver, Pool, Device}` (uuid identity, from ResourceSlice advertisements)
+and `pkg/discovery/classic.Locator{Node, Index}` (nodeIndex identity, from
+node labels — `gpu.count` devices per node, homogeneous label facts,
+deterministic ≤63-char id derivation with hash truncation). Sources read
+their own inputs through injected read-only clients (`client.Reader`);
+`NodeInfo` stays minimal (`Name`, `UID`). Mapping between `spec.source`
+arms and locator implementations happens through per-kind codecs owned by
+each source package; adapters never construct HardwareDevice objects.
 
 Mapping into status: `Facts.Accelerator` → `status.accelerator` (vendor,
 model, memory), `Plane` → `status.allocationPlane`, `CollectedAt` →
@@ -525,22 +606,28 @@ contract change.
   `{stringValue: ...}` is rejected by strict decoding. Our client uses the
   `k8s.io/api/resource/v1` Go types, which encode correctly.
 
-### 8.2 Dominance and plane resolution
+### 8.2 Node claiming and plane resolution (source-driven, amendments 2+3)
 
-- Pool key `(driver, pool.name)`; only the **highest generation** is read.
-- Pool completeness: the number of slices present at the highest generation
-  must equal `pool.resourceSliceCount`; otherwise the pool is
-  `Outcome=Unknown` — no partial updates, no fallback to GFD/simulator
-  facts for that node.
-- DRA wins plane detection for a node whenever node-local advertisements
-  from an allow-listed driver exist — **even while incomplete**. In that
-  case the classic adapter must not claim the node.
-- Classic claims a node only when (a) no DRA advertisements exist for it,
-  (b) appropriate extended-resource evidence is present
-  (`nvidia.com/gpu` in node allocatable/status capacity, provided by the
-  fake device plugin in the simulator profile), and (c) the opt-in identity
-  source is enabled. If neither plane has the required evidence, the node's
-  inventory is **unknown** — never zero devices.
+Plane resolution is not core knowledge: each registered source owns its
+claim rule, and `SelectNode` folds claims in registration order (DRA before
+classic).
+
+- DRA source claims a node whenever node-local advertisements from an
+  allow-listed driver exist — **even while incomplete** (pool key
+  `(driver, pool.name)`, highest generation only; the number of slices at
+  the highest generation must equal `pool.resourceSliceCount`, else the
+  pool is `Outcome=Unknown` — no partial updates, no fallback to classic
+  facts for that node).
+- Classic source claims a node when classic extended-resource evidence is
+  present (`nvidia.com/gpu` — or the configured `resourceName` — in node
+  allocatable/status capacity) and GFD-style labels supply the aggregate
+  facts. It enumerates `gpu.count` devices with nodeIndex identities and
+  homogeneous label facts (model `nvidia.com/gpu.product`, memory
+  `nvidia.com/gpu.memory` MiB → bytes; heterogeneous nodes are a documented
+  limitation of the labels input).
+- When a node is claimed by DRA, the classic enumeration is never used as a
+  fallback — including for DRA-incomplete nodes. When no registered source
+  claims a node, its inventory is **unknown** — never zero devices.
 
 ### 8.3 No-remaining-slices vs missing API/Forbidden
 
@@ -557,32 +644,36 @@ The two are never conflated.
 
 ---
 
-## 9. Classic FGO simulator adapter profile (opt-in, PoC-only)
+## 9. Classic labels source profile (production, amendment 3)
 
-**[executed]** release verification and **[source-inspected]** contract:
+The classic source is a **production source** reading exactly what a real
+classic (ClusterPolicy/GFD) cluster publishes — no ConfigMap contract, no
+simulator-aware code:
 
-- Pin: FGO **v0.2.1** (tag `v0.2.1`, commit `0901c8fc9c235e5b2ef8a2876fb89db1f7af23f4`). Released chart
-  `oci://ghcr.io/run-ai/fake-gpu-operator/fake-gpu-operator:0.2.1`
-  (digest `sha256:e73fc8c0...`) is content-identical to the inspected tag's
-  `deploy/fake-gpu-operator` except CD-set `version`/`appVersion: 0.2.1`;
-  component images `ghcr.io/run-ai/fake-gpu-operator/{device-plugin,dra-plugin-gpu,status-updater,topology-server,status-exporter}:0.2.1`
-  all exist. FGO `main` (`af4ff6d4`) differs from the tag only in
-  CHANGELOG/CI/Makefile — contract-relevant files are identical — so the
-  release artifact matches the inspected source.
-- Adapter reads only: ConfigMaps named `<prefix>-<node>` (default prefix
-  `topology`, chart `TOPOLOGY_CM_NAME`), in the **configured namespace
-  only**, data key `topology.yml`, fields `gpus[].id`, `gpuProduct`,
-  `gpuMemory` (MiB), `migStrategy` (read for provenance only).
-  `gpuMemory` → `resource.NewQuantity(MiB*1024*1024, BinarySI)`.
-- Explicitly ignored: occupancy/`allocatedBy`/`podGpuUsageStatus`, health,
-  pod usage, CUDA execution, `otherDevices`, driver/cuda versions.
-- Synthetic IDs are `GPU-<uuid5-SHA1(node name + index)>` — deterministic
-  per node name/index; the e2e must not assert physical identity across
-  node reprovisioning (IDs change with node name).
-- Adapter is enabled only by `spec.sources.simulator.enabled: true` +
-  namespace; default off; provenance (`sourceRef`, conditions) always names
-  the simulator source. It is evidence of control flow, not production
-  classic hardware discovery.
+- **Inputs (all real, cluster-existing today):** node labels
+  `nvidia.com/gpu.product` (model), `nvidia.com/gpu.memory` (MiB),
+  `nvidia.com/gpu.count` (device count); classic extended-resource evidence
+  (`nvidia.com/gpu` — or the singleton-configured `resourceName` — in node
+  allocatable/status capacity). Read via an injected read-only client; the
+  source claims only nodes with both evidence and labels.
+- **Identity (user-approved relaxation):** one device per index
+  `0..gpu.count-1`, `spec.identity.kind: nodeIndex`,
+  `spec.identity.id = <node-name>-gpu-<index>` (deterministic; hash-truncate
+  to ≤63 chars when the node name is long). Synthetic node-scoped identity:
+  stable for the node incarnation, not joinable with telemetry/DCGM,
+  documented as such via `identity.kind`. Node reprovisioning follows the
+  standard UID-grace/delete-recreate path.
+- **Facts:** homogeneous per node — model/memory from the labels
+  (`gpu.memory` MiB → bytes, BinarySI); vendor omitted (GFD does not
+  publish it). Absent labels on a claimed node = omitted facts, never
+  zero/defaulted.
+- **Known limitation (documented, not hidden):** GFD publishes one
+  product/memory per node; heterogeneous GPU nodes are misreported as
+  homogeneous. The labels input cannot do better; real per-device identity
+  on classic nodes needs a future source (DCGM/NVML reader).
+- **Configuration:** `spec.sources.classic.{enabled, resourceName}`;
+  default enabled — claims stay evidence-gated, so non-GPU nodes are never
+  fabricated.
 
 ### 9.1 Simulator install profiles (for task 010/011; frozen here)
 

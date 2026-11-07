@@ -23,9 +23,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// HardwareDevice represents one whole physical or simulated hardware device
-// (in this PoC, one whole GPU). One object never represents an allocation
-// replica, a MIG slice, or any other partition of a device.
+// HardwareDevice represents one whole hardware device (in this PoC, one
+// whole GPU). One object never represents an allocation replica, a MIG
+// slice, or any other partition of a device.
 //
 // The spec is written exclusively by the HardwareDiscovery singleton
 // controller; the status is written exclusively by the HardwareDevice
@@ -66,8 +66,9 @@ type HardwareDevice struct {
 
 // HardwareDeviceSpec is the identity and locator contract of one device.
 // It is owned by the HardwareDiscovery singleton controller.
-// +kubebuilder:validation:XValidation:rule="(has(self.source.dra) ? 1 : 0) + (has(self.source.simulator) ? 1 : 0) == 1",message="exactly one source locator (dra or simulator) is required"
-// +kubebuilder:validation:XValidation:rule="!has(self.source.simulator) || self.source.simulator.id == self.identity.id",message="simulator source id must match spec.identity.id"
+// +kubebuilder:validation:XValidation:rule="(has(self.source.dra) ? 1 : 0) + (has(self.source.classic) ? 1 : 0) == 1",message="exactly one source locator (dra or classic) is required"
+// +kubebuilder:validation:XValidation:rule="(self.source.kind == 'dra') == has(self.source.dra)",message="source.kind must match the set source arm"
+// +kubebuilder:validation:XValidation:rule="!has(self.source.classic) || self.source.classic.node == self.host.name",message="classic source node must match spec.host.name"
 type HardwareDeviceSpec struct {
 	// class is the device class this inventory entry belongs to.
 	// accelerator is the only class in this PoC; new values are additive,
@@ -76,7 +77,7 @@ type HardwareDeviceSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="class is immutable"
 	Class string `json:"class"`
 
-	// identity is the immutable physical (or simulated) device identity.
+	// identity is the immutable device identity.
 	// +required
 	Identity DeviceIdentity `json:"identity"`
 
@@ -86,16 +87,28 @@ type HardwareDeviceSpec struct {
 	// +required
 	Host DeviceHost `json:"host"`
 
-	// source is the locator union telling the device controller how to
-	// re-observe this device. Exactly one arm must be set.
+	// source is the locator telling the device controller how to re-observe
+	// this device: the registered source kind plus exactly one typed arm.
 	// +required
 	Source DeviceSource `json:"source"`
 }
 
-// DeviceIdentity identifies one whole physical or simulated device.
+// DeviceIdentity identifies one whole device, real or synthetic.
 type DeviceIdentity struct {
-	// id is the physical or simulated device ID (for NVIDIA GPUs, the GPU
-	// UUID). It is never derived from counts, list indexes, or aggregates.
+	// kind is the nature of the identity: uuid is a real vendor device ID
+	// (for NVIDIA GPUs, the GPU UUID published by DRA); nodeIndex is a
+	// synthetic, node-scoped identity derived from the node name and the
+	// device index within the node (classic labels source). A nodeIndex
+	// identity is stable only for the node incarnation and is not joinable
+	// with telemetry or vendor tooling.
+	// +kubebuilder:validation:Enum=uuid;nodeIndex
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="identity.kind is immutable"
+	Kind string `json:"kind"`
+
+	// id is the device ID: the vendor device ID (GPU UUID) for kind uuid,
+	// or the deterministic <node-name>-gpu-<index> for kind nodeIndex
+	// (hash-truncated to stay within 63 characters). It is immutable and
+	// unique within the node incarnation.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="identity.id is immutable"
@@ -120,21 +133,27 @@ type DeviceHost struct {
 	UID types.UID `json:"uid"`
 }
 
-// DeviceSource is the frozen, source-owned locator union. Exactly one arm is
-// set, enforced by a counting CEL rule on HardwareDeviceSpec so that adding a
-// third arm later is a reviewed schema change, not a silent reopening.
+// DeviceSource is the source-owned locator of one device: the registered
+// source kind plus exactly one typed arm (enforced by a counting CEL rule on
+// HardwareDeviceSpec, so that adding a new arm later is a reviewed schema
+// change, not a silent reopening). The production binary registers the dra
+// and classic source kinds.
 type DeviceSource struct {
+	// kind is the registered source kind that owns the locator arm. It must
+	// match the set arm (enforced by CEL).
+	// +kubebuilder:validation:Enum=dra;classic
+	Kind string `json:"kind"`
+
 	// dra locates the device in a stable resource.k8s.io/v1 ResourceSlice
 	// advertisement. The enforced driver allow-list is the singleton's
 	// spec.sources.dra.driverAllowList (default pin gpu.nvidia.com).
 	// +optional
 	DRA *DRASource `json:"dra,omitempty"`
 
-	// simulator locates the device in the Run:ai fake-gpu-operator
-	// per-node topology ConfigMap. It is written only by the opt-in,
-	// PoC-only classic simulator profile.
+	// classic locates the device in the classic labels input of its hosting
+	// node (GFD-style node labels plus node extended resources).
 	// +optional
-	Simulator *SimulatorSource `json:"simulator,omitempty"`
+	Classic *ClassicSource `json:"classic,omitempty"`
 }
 
 // DRASource is the ResourceSlice locator of one device.
@@ -158,26 +177,21 @@ type DRASource struct {
 	Device string `json:"device"`
 }
 
-// SimulatorSource is the fake-gpu-operator topology ConfigMap locator of one
-// device. It exists only for the PoC simulator profile and is opt-in.
-type SimulatorSource struct {
-	// namespace is the namespace whose ConfigMaps the opt-in simulator
-	// adapter reads; no other namespace is ever read.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	Namespace string `json:"namespace"`
-
-	// configMap is the per-node topology ConfigMap name
-	// (topology-<node> by convention).
+// ClassicSource is the classic labels locator of one device: the hosting
+// node and the device's index within the node's published gpu.count. The
+// identity of such a device is synthetic and node-scoped
+// (spec.identity.kind: nodeIndex).
+type ClassicSource struct {
+	// node is the name of the Node whose labels describe this device. It
+	// always equals spec.host.name (enforced by CEL).
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
-	ConfigMap string `json:"configMap"`
+	Node string `json:"node"`
 
-	// id is the synthetic device ID inside the ConfigMap; it always equals
-	// spec.identity.id (enforced by CEL).
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	ID string `json:"id"`
+	// index is the device's index within the node's published gpu.count.
+	// It is stable for the node incarnation and dies with it.
+	// +kubebuilder:validation:Minimum=0
+	Index int32 `json:"index"`
 }
 
 // HardwareDeviceStatus is the observed state of one device, written only by
@@ -205,8 +219,8 @@ type HardwareDeviceStatus struct {
 	CollectedAt *metav1.Time `json:"collectedAt,omitempty"`
 
 	// sourceRef is the provenance of the last successful observation, for
-	// example dra/gpu.nvidia.com/<pool> or simulator/<namespace>/<configmap>.
-	// It is replaced, never merged, on an observed source change.
+	// example dra/gpu.nvidia.com/<pool> or classic/<node>. It is replaced,
+	// never merged, on an observed source change.
 	// +optional
 	SourceRef string `json:"sourceRef,omitempty"`
 
@@ -228,13 +242,14 @@ type HardwareDeviceStatus struct {
 // never zero or defaulted.
 type AcceleratorDeviceStatus struct {
 	// vendor is the device vendor when the source publishes it. Neither the
-	// PoC simulator ConfigMaps nor the NVIDIA DRA attributes carry vendor,
-	// so it is omitted in this PoC.
+	// classic GFD labels nor the NVIDIA DRA attributes carry vendor, so it
+	// is omitted in this PoC.
 	// +optional
 	Vendor string `json:"vendor,omitempty"`
 
-	// model is the observed device model (fake-gpu-operator gpuProduct or
-	// the DRA gpu.nvidia.com/productName attribute).
+	// model is the observed device model (the classic
+	// nvidia.com/gpu.product label or the DRA gpu.nvidia.com/productName
+	// attribute).
 	// +optional
 	Model string `json:"model,omitempty"`
 

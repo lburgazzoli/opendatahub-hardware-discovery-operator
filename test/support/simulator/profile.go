@@ -82,9 +82,10 @@ func ChartRef() string {
 type Profile string
 
 const (
-	// ProfileClassic enables the fake classic device plugin; the per-node
-	// topology ConfigMaps are the discovery input for the opt-in simulator
-	// source adapter. No DRA plugin runs in this profile.
+	// ProfileClassic enables the fake classic device plugin, which
+	// publishes the nvidia.com/gpu extended resource on labeled nodes; the
+	// classic e2e scenario additionally applies GFD-style node labels as
+	// scenario data. No DRA plugin runs in this profile.
 	ProfileClassic Profile = "classic"
 
 	// ProfileDRA enables the fake native DRA plugin publishing real

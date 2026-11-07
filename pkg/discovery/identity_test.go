@@ -144,6 +144,7 @@ func TestAmbiguousIDs(t *testing.T) {
 		validIdentity(),
 		{
 			ID:       otherDeviceID,
+			Kind:     discovery.IdentityKindUUID,
 			NodeName: otherNode,
 			NodeUID:  otherUID,
 			Plane:    discovery.PlaneDRA,

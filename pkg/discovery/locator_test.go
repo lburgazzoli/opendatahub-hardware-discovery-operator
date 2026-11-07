@@ -17,7 +17,6 @@ limitations under the License.
 package discovery_test
 
 import (
-	"errors"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -25,82 +24,55 @@ import (
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
 )
 
-func TestLocatorValidate(t *testing.T) {
+func TestLocatorContract(t *testing.T) {
 	g := NewWithT(t)
 
-	g.Expect(draLocator().Validate()).To(Succeed())
-	g.Expect(simulatorLocator().Validate()).To(Succeed())
+	dra := draLocator()
+	classic := classicLocator()
 
-	cases := []struct {
-		name    string
-		locator discovery.Locator
-		want    error
-	}{
-		{"no arm", discovery.Locator{}, discovery.ErrNoLocator},
-		{
-			"both arms",
-			discovery.Locator{DRA: draLocator().DRA, Simulator: simulatorLocator().Simulator},
-			discovery.ErrAmbiguousLocator,
-		},
-		{
-			"dra missing driver",
-			discovery.Locator{DRA: &discovery.DRALocator{Pool: nodeName, Device: deviceID}},
-			discovery.ErrIncompleteLocator,
-		},
-		{
-			"simulator missing configMap",
-			discovery.Locator{Simulator: &discovery.SimulatorLocator{Namespace: simulatorNS, ID: deviceID}},
-			discovery.ErrIncompleteLocator,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			g := NewWithT(t)
-			err := tc.locator.Validate()
-			g.Expect(err).To(HaveOccurred())
-			g.Expect(errors.Is(err, tc.want)).To(BeTrue(), "expected %v, got %v", tc.want, err)
-		})
-	}
-}
+	g.Expect(dra.Kind()).To(Equal(draSourceID))
+	g.Expect(classic.Kind()).To(Equal(classicSourceID))
+	g.Expect(dra.Validate()).To(Succeed())
+	g.Expect(classic.Validate()).To(Succeed())
 
-func TestLocatorEqual(t *testing.T) {
-	g := NewWithT(t)
+	// Equal is deep within a kind and false across kinds.
+	g.Expect(dra.Equal(draLocator())).To(BeTrue())
+	g.Expect(classic.Equal(classicLocator())).To(BeTrue())
+	g.Expect(dra.Equal(classic)).To(BeFalse())
+	g.Expect(classic.Equal(dra)).To(BeFalse())
 
-	g.Expect(draLocator().Equal(draLocator())).To(BeTrue())
-	g.Expect(simulatorLocator().Equal(simulatorLocator())).To(BeTrue())
-	g.Expect(discovery.Locator{}.Equal(discovery.Locator{})).To(BeTrue())
+	// A locator of the same kind but different provenance differs.
+	changedRef := fakeLocator{kind: draSourceID, ref: nvidiaDriver + "/" + otherNode}
+	g.Expect(dra.Equal(changedRef)).To(BeFalse())
 
-	// Deep comparison: field differences and arm mismatches are changes.
-	changedPool := draLocator()
-	changedPool.DRA.Pool = otherNode
-	g.Expect(draLocator().Equal(changedPool)).To(BeFalse())
-
-	g.Expect(draLocator().Equal(simulatorLocator())).To(BeFalse())
-	g.Expect(draLocator().Equal(discovery.Locator{})).To(BeFalse())
-	g.Expect(discovery.Locator{}.Equal(draLocator())).To(BeFalse())
+	// An invalid locator fails Validate with its classified cause.
+	invalid := fakeLocator{kind: draSourceID, ref: nodeName, invalid: discovery.ErrIncompleteLocator}
+	err := invalid.Validate()
+	g.Expect(err).To(MatchError(discovery.ErrIncompleteLocator))
 
 	// Caller-owned values are not mutated by the comparison.
-	original := draLocator()
-	_ = original.Equal(simulatorLocator())
-	g.Expect(original).To(Equal(draLocator()))
+	original := dra.(fakeLocator)
+	_ = dra.Equal(classic)
+	g.Expect(dra.(fakeLocator)).To(Equal(original))
 }
 
 func TestSourceRef(t *testing.T) {
 	g := NewWithT(t)
 
-	draRef, err := discovery.SourceRef("dra", draLocator())
+	draRef, err := discovery.SourceRef(draSourceID, draLocator())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(draRef).To(Equal("dra/" + nvidiaDriver + "/" + nodeName))
 
-	simulatorRef, err := discovery.SourceRef("simulator", simulatorLocator())
+	classicRef, err := discovery.SourceRef(classicSourceID, classicLocator())
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(simulatorRef).To(Equal("simulator/" + simulatorNS + "/" + simulatorCM))
+	g.Expect(classicRef).To(Equal("classic/" + nodeName))
 
-	_, err = discovery.SourceRef("dra", discovery.Locator{})
-	g.Expect(errors.Is(err, discovery.ErrNoLocator)).To(BeTrue())
+	// A missing locator is rejected, never rendered as a partial ref.
+	_, err = discovery.SourceRef(draSourceID, nil)
+	g.Expect(err).To(MatchError(discovery.ErrNoLocator))
 
-	incomplete := draLocator()
-	incomplete.DRA.Device = ""
-	_, err = discovery.SourceRef("dra", incomplete)
-	g.Expect(errors.Is(err, discovery.ErrIncompleteLocator)).To(BeTrue())
+	// An invalid locator is rejected with its classified cause.
+	invalid := fakeLocator{kind: draSourceID, ref: nodeName, invalid: discovery.ErrIncompleteLocator}
+	_, err = discovery.SourceRef(draSourceID, invalid)
+	g.Expect(err).To(MatchError(discovery.ErrIncompleteLocator))
 }

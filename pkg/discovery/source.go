@@ -14,14 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package discovery holds the frozen source and identity contracts shared
-// by the discovery adapters and the two reconcilers (design doc §7,
-// docs/design/poc-contract.md). The package is pure normalization logic:
-// it imports only k8s.io/apimachinery and the standard library, never
-// constructs HardwareDevice objects, and never reads the wall clock or the
-// cluster. Mapping discovery results into HardwareDeviceStatus happens
-// once, in the device controller; changing this representation requires a
-// re-approved contract change.
+// Package discovery holds the source and identity contracts shared by the
+// discovery source plugins and the two reconcilers (design doc §7,
+// docs/design/poc-contract.md, amendments 2+3). The package is pure,
+// source-agnostic normalization logic: it never enumerates source kinds,
+// planes or input types. It imports only k8s.io/apimachinery and the
+// standard library, never constructs HardwareDevice objects, and never
+// reads the wall clock or the cluster. Mapping discovery results into
+// HardwareDeviceStatus happens once, in the device controller; changing
+// this representation requires a re-approved contract change.
 package discovery
 
 import (
@@ -47,6 +48,27 @@ const (
 // Valid reports whether p is one of the known allocation planes.
 func (p Plane) Valid() bool {
 	return p == PlaneClassic || p == PlaneDRA
+}
+
+// IdentityKind distinguishes real vendor identity from synthetic
+// node-scoped identity (amendment 3, design doc §4.1): uuid is a real
+// vendor device ID (GPU UUID, published by DRA); nodeIndex is a synthetic
+// identity derived from the node name and the device index within the node
+// (classic labels source) — stable only for the node incarnation and not
+// joinable with telemetry or vendor tooling. It is persisted as
+// spec.identity.kind.
+type IdentityKind string
+
+const (
+	// IdentityKindUUID is a real vendor device identity.
+	IdentityKindUUID IdentityKind = "uuid"
+	// IdentityKindNodeIndex is a synthetic node-scoped identity.
+	IdentityKindNodeIndex IdentityKind = "nodeIndex"
+)
+
+// Valid reports whether k is one of the known identity kinds.
+func (k IdentityKind) Valid() bool {
+	return k == IdentityKindUUID || k == IdentityKindNodeIndex
 }
 
 // Outcome distinguishes authoritative source results from unknown ones.
@@ -78,6 +100,10 @@ var (
 	// ErrUnknownPlane reports an allocation plane that is neither classic
 	// nor dra.
 	ErrUnknownPlane = errors.New("discovery: allocation plane is not classic or dra")
+
+	// ErrUnknownIdentityKind reports an identity kind that is neither uuid
+	// nor nodeIndex.
+	ErrUnknownIdentityKind = errors.New("discovery: identity kind is not uuid or nodeIndex")
 
 	// ErrZeroMemory reports a memory fact published as zero instead of
 	// omitted: optional facts are absent or present, never zero or
@@ -127,24 +153,30 @@ func (n NodeInfo) Validate() error {
 
 // Identity is a discovered device identity plus how to re-observe it.
 type Identity struct {
-	// ID is the physical or simulated device id (for NVIDIA GPUs, the GPU
-	// UUID). It is never derived from resource counts, list indexes or
-	// aggregates.
+	// ID is the device id: the vendor device ID (GPU UUID) for Kind uuid,
+	// or the deterministic <node-name>-gpu-<index> for Kind nodeIndex.
+	// nodeIndex ids are node-scoped and die with the node incarnation —
+	// a deliberate, user-approved relaxation of the earlier
+	// no-fabricated-identity rule (amendment 3), kept distinguishable from
+	// vendor identity via Kind.
 	ID string
+	// Kind is the nature of the identity: uuid (real vendor identity,
+	// DRA) or nodeIndex (synthetic node-scoped identity, classic labels).
+	Kind IdentityKind
 	// NodeName is the name of the Node the device was discovered on.
 	NodeName string
 	// NodeUID is the UID of the Node the device was discovered on.
 	NodeUID types.UID
 	// Plane is the allocation plane that evidenced the device.
 	Plane Plane
-	// Locator is the frozen, source-owned union stored verbatim in
-	// spec.source.
+	// Locator is the source-owned locator stored verbatim in spec.source.
 	Locator Locator
 }
 
-// Validate reports whether the identity is complete: a device id, a full
-// Node reference, a known allocation plane and a valid source locator.
-// Source refs must identify real input objects, not an inferred registry.
+// Validate reports whether the identity is complete: a device id, an
+// identity kind, a full Node reference, a known allocation plane and a
+// valid source locator. Source refs must identify real input objects, not
+// an inferred registry.
 func (i Identity) Validate() error {
 	switch {
 	case i.ID == "":
@@ -152,8 +184,14 @@ func (i Identity) Validate() error {
 	case i.NodeName == "" || i.NodeUID == "":
 		return fmt.Errorf("%w: device %q", ErrMissingNode, i.ID)
 	}
+	if !i.Kind.Valid() {
+		return fmt.Errorf("%w: %q for device %q", ErrUnknownIdentityKind, i.Kind, i.ID)
+	}
 	if !i.Plane.Valid() {
 		return fmt.Errorf("%w: %q for device %q", ErrUnknownPlane, i.Plane, i.ID)
+	}
+	if i.Locator == nil {
+		return fmt.Errorf("device %q: %w", i.ID, ErrNoLocator)
 	}
 	if err := i.Locator.Validate(); err != nil {
 		return fmt.Errorf("device %q: %w", i.ID, err)
@@ -175,8 +213,8 @@ type Facts struct {
 // AcceleratorFacts are the observed facts of one whole accelerator (GPU).
 type AcceleratorFacts struct {
 	// Vendor is the device vendor when the source publishes it. Neither
-	// the PoC simulator ConfigMaps nor the NVIDIA DRA attributes carry
-	// vendor, so it is omitted in this PoC.
+	// the classic GFD labels nor the NVIDIA DRA attributes carry vendor,
+	// so it is omitted in this PoC.
 	Vendor string
 	// Model is the observed device model.
 	Model string
@@ -271,16 +309,25 @@ func (o Observation) Validate() error {
 	return nil
 }
 
-// Source is the frozen discovery source contract (design doc §7). A source
-// enumerates trustworthy identities and separately observes one identity;
-// it never owns Kubernetes inventory writes and never constructs
-// HardwareDevice objects. Adapters read only real input objects.
+// Source is the discovery source plugin contract (design doc §7,
+// amendments 2+3). A source owns its locator type, its input reading (via
+// injected read-only clients), its node-claim rule and its facts parsing;
+// the core folds claiming sources by priority. A source never owns
+// Kubernetes inventory writes and never constructs HardwareDevice objects.
 type Source interface {
-	// ID identifies the source in provenance references
-	// (status.sourceRef).
+	// ID identifies the source in provenance references (status.sourceRef)
+	// and keys its per-node enumerations. It must match the Kind of the
+	// locators the source produces.
 	ID() string
 	// Plane is the allocation plane the source evidences.
 	Plane() Plane
+	// ClaimsNode reports whether this source claims the node for
+	// discovery. The claim rule is source knowledge — for example, the DRA
+	// source claims nodes with allow-listed advertisements (even while
+	// incomplete), the classic source claims nodes with classic
+	// extended-resource evidence plus GFD-style labels. Unclaimed nodes
+	// are unknown for this source — never an authoritative empty set.
+	ClaimsNode(ctx context.Context, node NodeInfo) bool
 	// Enumerate returns the identities the source discovers on the given
 	// nodes. The Enumeration is the classified result: Success (possibly
 	// with zero identities) is authoritative and may prune; Unknown

@@ -17,6 +17,7 @@ limitations under the License.
 package discovery_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -25,64 +26,103 @@ import (
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
 )
 
-func TestResolvePlane(t *testing.T) {
-	cases := []struct {
-		name     string
-		evidence discovery.PlaneEvidence
-		plane    discovery.Plane
-		claimed  bool
-	}{
-		{
-			// DRA wins even while incomplete and even when classic
-			// evidence exists.
-			"dra dominates",
-			discovery.PlaneEvidence{NodeName: nodeName, DRA: true, Classic: true, Simulator: true},
-			discovery.PlaneDRA,
-			true,
-		},
-		{
-			"dra only",
-			discovery.PlaneEvidence{NodeName: nodeName, DRA: true},
-			discovery.PlaneDRA,
-			true,
-		},
-		{
-			"classic claims",
-			discovery.PlaneEvidence{NodeName: nodeName, Classic: true, Simulator: true},
-			discovery.PlaneClassic,
-			true,
-		},
-		{
-			// Classic needs the extended-resource evidence AND the opt-in
-			// identity source.
-			"classic without simulator source",
-			discovery.PlaneEvidence{NodeName: nodeName, Classic: true},
-			"",
-			false,
-		},
-		{
-			"classic without extended-resource evidence",
-			discovery.PlaneEvidence{NodeName: nodeName, Simulator: true},
-			"",
-			false,
-		},
-		{
-			// Neither plane has the required evidence: unknown, never
-			// zero devices.
-			"no evidence",
-			discovery.PlaneEvidence{NodeName: nodeName},
-			"",
-			false,
-		},
+// claimSource is a minimal fake Source with a static node-claim rule,
+// proving the pluggable contract is implementable exactly as documented.
+type claimSource struct {
+	id     string
+	plane  discovery.Plane
+	claims map[string]bool
+}
+
+var _ discovery.Source = (*claimSource)(nil)
+
+func (s *claimSource) ID() string             { return s.id }
+func (s *claimSource) Plane() discovery.Plane { return s.plane }
+
+func (s *claimSource) ClaimsNode(_ context.Context, node discovery.NodeInfo) bool {
+	return s.claims[node.Name]
+}
+
+func (s *claimSource) Enumerate(
+	ctx context.Context,
+	nodes []discovery.NodeInfo,
+) (discovery.Enumeration, error) {
+	if err := ctx.Err(); err != nil {
+		return discovery.Enumeration{}, err
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			g := NewWithT(t)
-			plane, ok := discovery.ResolvePlane(tc.evidence)
-			g.Expect(ok).To(Equal(tc.claimed))
-			g.Expect(plane).To(Equal(tc.plane))
-		})
+	return discovery.Enumeration{}, nil
+}
+
+func (s *claimSource) Observe(
+	ctx context.Context,
+	id discovery.Identity,
+) (discovery.Observation, error) {
+	if err := ctx.Err(); err != nil {
+		return discovery.Observation{}, err
 	}
+	return discovery.Observation{}, nil
+}
+
+// registry builds the production-shaped registry: DRA registered before
+// classic, so DRA claims win the fold.
+func registry(draClaims, classicClaims bool) discovery.Sources {
+	return discovery.MustNewSources(
+		&claimSource{
+			id:     draSourceID,
+			plane:  discovery.PlaneDRA,
+			claims: map[string]bool{nodeName: draClaims},
+		},
+		&claimSource{
+			id:     classicSourceID,
+			plane:  discovery.PlaneClassic,
+			claims: map[string]bool{nodeName: classicClaims},
+		},
+	)
+}
+
+func TestSourcesRegistry(t *testing.T) {
+	t.Run("duplicate source ids are rejected", func(t *testing.T) {
+		g := NewWithT(t)
+		_, err := discovery.NewSources(
+			&claimSource{id: draSourceID, claims: map[string]bool{}},
+			&claimSource{id: draSourceID, claims: map[string]bool{}},
+		)
+		g.Expect(errors.Is(err, discovery.ErrDuplicateSource)).To(BeTrue())
+	})
+
+	t.Run("nil sources are rejected", func(t *testing.T) {
+		g := NewWithT(t)
+		_, err := discovery.NewSources(nil)
+		g.Expect(errors.Is(err, discovery.ErrDuplicateSource)).To(BeTrue())
+	})
+
+	t.Run("priority order is preserved and the list is a copy", func(t *testing.T) {
+		g := NewWithT(t)
+
+		sources := registry(true, true)
+		g.Expect(sources.Len()).To(Equal(2))
+		list := sources.List()
+		g.Expect(list[0].ID()).To(Equal(draSourceID))
+		g.Expect(list[1].ID()).To(Equal(classicSourceID))
+
+		// Mutating the returned slice cannot reorder the registry.
+		list[0], list[1] = list[1], list[0]
+		g.Expect(sources.List()[0].ID()).To(Equal(draSourceID))
+	})
+
+	t.Run("empty registry is usable and claims nothing", func(t *testing.T) {
+		g := NewWithT(t)
+		var sources discovery.Sources
+		g.Expect(sources.Len()).To(Equal(0))
+		selection := discovery.SelectNode(
+			context.Background(),
+			discovery.NodeInfo{Name: nodeName, UID: nodeUID},
+			sources,
+			nil,
+		)
+		g.Expect(selection.Outcome).To(Equal(discovery.OutcomeUnknown))
+		g.Expect(errors.Is(selection.Err, discovery.ErrNoPlaneEvidence)).To(BeTrue())
+	})
 }
 
 func TestSelectNode(t *testing.T) {
@@ -91,53 +131,87 @@ func TestSelectNode(t *testing.T) {
 	successful := discovery.Enumeration{Outcome: discovery.OutcomeSuccess, Identities: identities}
 	successfulEmpty := discovery.Enumeration{Outcome: discovery.OutcomeSuccess}
 	unknown := discovery.Enumeration{Outcome: discovery.OutcomeUnknown, Err: cause}
-	draEvidence := discovery.PlaneEvidence{NodeName: nodeName, DRA: true}
-	classicEvidence := discovery.PlaneEvidence{NodeName: nodeName, Classic: true, Simulator: true}
+	node := discovery.NodeInfo{Name: nodeName, UID: nodeUID}
 
-	t.Run("authoritative dra snapshot is used", func(t *testing.T) {
+	t.Run("first claimer in priority order decides", func(t *testing.T) {
 		g := NewWithT(t)
-		selection := discovery.SelectNode(draEvidence, successful, successfulEmpty)
+		// Both sources claim the node: DRA is registered first, so its
+		// enumeration decides even though classic enumerated too.
+		selection := discovery.SelectNode(context.Background(), node, registry(true, true), map[string]discovery.Enumeration{
+			draSourceID:     successful,
+			classicSourceID: successfulEmpty,
+		})
+		g.Expect(selection.SourceID).To(Equal(draSourceID))
 		g.Expect(selection.Plane).To(Equal(discovery.PlaneDRA))
 		g.Expect(selection.Outcome).To(Equal(discovery.OutcomeSuccess))
 		g.Expect(selection.Identities).To(Equal(identities))
 	})
 
-	t.Run("authoritative dra empty prunes", func(t *testing.T) {
+	t.Run("authoritative empty snapshot prunes", func(t *testing.T) {
 		g := NewWithT(t)
-		selection := discovery.SelectNode(draEvidence, successfulEmpty, successfulEmpty)
+		selection := discovery.SelectNode(context.Background(), node, registry(true, true), map[string]discovery.Enumeration{
+			draSourceID:     successfulEmpty,
+			classicSourceID: successful,
+		})
+		g.Expect(selection.SourceID).To(Equal(draSourceID))
 		g.Expect(selection.Outcome).To(Equal(discovery.OutcomeSuccess))
 		g.Expect(selection.Identities).To(BeEmpty())
 	})
 
 	t.Run("classic fallback is suppressed on dra-incomplete nodes", func(t *testing.T) {
 		g := NewWithT(t)
-		// DRA advertisements exist but the DRA snapshot is incomplete:
-		// the node is unknown even though classic enumerated successfully.
-		selection := discovery.SelectNode(draEvidence, unknown, successful)
+		// DRA claims the node but its snapshot is incomplete: the node is
+		// unknown even though classic enumerated successfully — the later
+		// source is never consulted as a fallback.
+		selection := discovery.SelectNode(context.Background(), node, registry(true, true), map[string]discovery.Enumeration{
+			draSourceID:     unknown,
+			classicSourceID: successful,
+		})
+		g.Expect(selection.SourceID).To(Equal(draSourceID))
 		g.Expect(selection.Plane).To(Equal(discovery.PlaneDRA))
 		g.Expect(selection.Outcome).To(Equal(discovery.OutcomeUnknown))
 		g.Expect(selection.Err).To(MatchError(cause))
 		g.Expect(selection.Identities).To(BeEmpty())
 	})
 
-	t.Run("authoritative classic snapshot is used", func(t *testing.T) {
+	t.Run("lower-priority source decides when the higher one does not claim", func(t *testing.T) {
 		g := NewWithT(t)
-		selection := discovery.SelectNode(classicEvidence, unknown, successfulEmpty)
+		selection := discovery.SelectNode(context.Background(), node, registry(false, true), map[string]discovery.Enumeration{
+			classicSourceID: successful,
+		})
+		g.Expect(selection.SourceID).To(Equal(classicSourceID))
 		g.Expect(selection.Plane).To(Equal(discovery.PlaneClassic))
 		g.Expect(selection.Outcome).To(Equal(discovery.OutcomeSuccess))
-		g.Expect(selection.Identities).To(BeEmpty())
+		g.Expect(selection.Identities).To(Equal(identities))
 	})
 
 	t.Run("unknown classic enumeration retains", func(t *testing.T) {
 		g := NewWithT(t)
-		selection := discovery.SelectNode(classicEvidence, successful, unknown)
+		selection := discovery.SelectNode(context.Background(), node, registry(false, true), map[string]discovery.Enumeration{
+			classicSourceID: unknown,
+		})
+		g.Expect(selection.SourceID).To(Equal(classicSourceID))
 		g.Expect(selection.Outcome).To(Equal(discovery.OutcomeUnknown))
 		g.Expect(selection.Err).To(MatchError(cause))
 	})
 
-	t.Run("no plane evidence is unknown, never zero", func(t *testing.T) {
+	t.Run("claiming source without enumeration is a wiring error", func(t *testing.T) {
 		g := NewWithT(t)
-		selection := discovery.SelectNode(discovery.PlaneEvidence{NodeName: nodeName}, successful, successful)
+		selection := discovery.SelectNode(context.Background(), node, registry(false, true), nil)
+		g.Expect(selection.SourceID).To(Equal(classicSourceID))
+		g.Expect(selection.Outcome).To(Equal(discovery.OutcomeUnknown))
+		g.Expect(errors.Is(selection.Err, discovery.ErrMissingEnumeration)).To(BeTrue())
+		g.Expect(selection.Identities).To(BeEmpty())
+	})
+
+	t.Run("no claiming source is unknown, never zero", func(t *testing.T) {
+		g := NewWithT(t)
+		enumerations := map[string]discovery.Enumeration{
+			draSourceID:     successful,
+			classicSourceID: successful,
+		}
+		selection := discovery.SelectNode(context.Background(), node, registry(false, false), enumerations)
+		g.Expect(selection.SourceID).To(BeEmpty())
 		g.Expect(selection.Plane).To(BeEmpty())
 		g.Expect(selection.Outcome).To(Equal(discovery.OutcomeUnknown))
 		g.Expect(selection.Identities).To(BeEmpty())
@@ -146,7 +220,10 @@ func TestSelectNode(t *testing.T) {
 
 	t.Run("unset enumeration outcome is unknown", func(t *testing.T) {
 		g := NewWithT(t)
-		selection := discovery.SelectNode(draEvidence, discovery.Enumeration{}, successful)
+		selection := discovery.SelectNode(context.Background(), node, registry(true, false), map[string]discovery.Enumeration{
+			draSourceID: {},
+		})
+		g.Expect(selection.SourceID).To(Equal(draSourceID))
 		g.Expect(selection.Outcome).To(Equal(discovery.OutcomeUnknown))
 		g.Expect(errors.Is(selection.Err, discovery.ErrInvalidOutcome)).To(BeTrue())
 	})
@@ -156,7 +233,9 @@ func TestSelectNode(t *testing.T) {
 		// Contract-violating input: an unknown enumeration never
 		// contributes a partial hardware set.
 		partial := discovery.Enumeration{Outcome: discovery.OutcomeUnknown, Err: cause, Identities: identities}
-		selection := discovery.SelectNode(classicEvidence, successful, partial)
+		selection := discovery.SelectNode(context.Background(), node, registry(true, false), map[string]discovery.Enumeration{
+			draSourceID: partial,
+		})
 		g.Expect(selection.Outcome).To(Equal(discovery.OutcomeUnknown))
 		g.Expect(selection.Identities).To(BeEmpty())
 	})

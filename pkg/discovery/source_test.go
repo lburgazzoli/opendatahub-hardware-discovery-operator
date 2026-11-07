@@ -28,7 +28,7 @@ import (
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
 )
 
-func TestPlaneAndOutcomeValues(t *testing.T) {
+func TestPlaneOutcomeAndIdentityKindValues(t *testing.T) {
 	g := NewWithT(t)
 
 	g.Expect(string(discovery.PlaneClassic)).To(Equal("classic"))
@@ -42,6 +42,14 @@ func TestPlaneAndOutcomeValues(t *testing.T) {
 	g.Expect(string(discovery.OutcomeSuccess)).To(Equal("Success"))
 	g.Expect(string(discovery.OutcomeUnknown)).To(Equal("Unknown"))
 	g.Expect(discovery.OutcomeSuccess).NotTo(Equal(discovery.OutcomeUnknown))
+
+	// uuid and nodeIndex are the only identity kinds: real vendor
+	// identity stays distinguishable from synthetic node-scoped identity.
+	g.Expect(string(discovery.IdentityKindUUID)).To(Equal("uuid"))
+	g.Expect(string(discovery.IdentityKindNodeIndex)).To(Equal("nodeIndex"))
+	g.Expect(discovery.IdentityKindUUID.Valid()).To(BeTrue())
+	g.Expect(discovery.IdentityKindNodeIndex.Valid()).To(BeTrue())
+	g.Expect(discovery.IdentityKind("fabricated").Valid()).To(BeFalse())
 }
 
 func TestNodeInfoValidate(t *testing.T) {
@@ -59,6 +67,7 @@ func TestIdentityValidate(t *testing.T) {
 	g := NewWithT(t)
 
 	g.Expect(validIdentity().Validate()).To(Succeed())
+	g.Expect(nodeIndexIdentity().Validate()).To(Succeed())
 
 	cases := []struct {
 		name     string
@@ -68,16 +77,14 @@ func TestIdentityValidate(t *testing.T) {
 		{"missing id", func(i *discovery.Identity) { i.ID = "" }, discovery.ErrMissingID},
 		{"missing node name", func(i *discovery.Identity) { i.NodeName = "" }, discovery.ErrMissingNode},
 		{"missing node uid", func(i *discovery.Identity) { i.NodeUID = "" }, discovery.ErrMissingNode},
+		{"unknown identity kind", func(i *discovery.Identity) { i.Kind = "fabricated" }, discovery.ErrUnknownIdentityKind},
 		{"unknown plane", func(i *discovery.Identity) { i.Plane = "wire" }, discovery.ErrUnknownPlane},
-		{"no locator", func(i *discovery.Identity) { i.Locator = discovery.Locator{} }, discovery.ErrNoLocator},
+		{"no locator", func(i *discovery.Identity) { i.Locator = nil }, discovery.ErrNoLocator},
 		{
-			"ambiguous locator",
-			func(i *discovery.Identity) { i.Locator.Simulator = simulatorLocator().Simulator },
-			discovery.ErrAmbiguousLocator,
-		},
-		{
-			"incomplete dra locator",
-			func(i *discovery.Identity) { i.Locator.DRA.Pool = "" },
+			"incomplete locator",
+			func(i *discovery.Identity) {
+				i.Locator = fakeLocator{kind: "dra", invalid: discovery.ErrIncompleteLocator}
+			},
 			discovery.ErrIncompleteLocator,
 		},
 	}
@@ -186,9 +193,10 @@ func TestObservationValidate(t *testing.T) {
 	g.Expect(errors.Is(noIdentity.Validate(), discovery.ErrMissingID)).To(BeTrue())
 }
 
-// recordingSource is a minimal fake Source proving the frozen contract is
-// implementable exactly as documented, with the context propagated.
+// recordingSource is a minimal fake Source proving the pluggable contract
+// is implementable exactly as documented, with the context propagated.
 type recordingSource struct {
+	claims     bool
 	enumerated []discovery.NodeInfo
 	observed   []discovery.Identity
 }
@@ -197,6 +205,10 @@ var _ discovery.Source = (*recordingSource)(nil)
 
 func (s *recordingSource) ID() string             { return "dra" }
 func (s *recordingSource) Plane() discovery.Plane { return discovery.PlaneDRA }
+
+func (s *recordingSource) ClaimsNode(ctx context.Context, node discovery.NodeInfo) bool {
+	return ctx.Err() == nil && s.claims
+}
 
 func (s *recordingSource) Enumerate(
 	ctx context.Context,
@@ -210,6 +222,7 @@ func (s *recordingSource) Enumerate(
 	for _, node := range nodes {
 		identities = append(identities, discovery.Identity{
 			ID:       deviceID,
+			Kind:     discovery.IdentityKindUUID,
 			NodeName: node.Name,
 			NodeUID:  node.UID,
 			Plane:    discovery.PlaneDRA,
@@ -237,17 +250,20 @@ func (s *recordingSource) Observe(
 func TestSourceContractUsage(t *testing.T) {
 	g := NewWithT(t)
 
-	source := &recordingSource{}
+	source := &recordingSource{claims: true}
 	nodes := []discovery.NodeInfo{
 		{Name: nodeName, UID: nodeUID},
 		{Name: otherNode, UID: otherUID},
 	}
+
+	g.Expect(source.ClaimsNode(context.Background(), nodes[0])).To(BeTrue())
 
 	enumeration, err := source.Enumerate(context.Background(), nodes)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(enumeration.Validate()).To(Succeed())
 	g.Expect(enumeration.Authoritative()).To(BeTrue())
 	g.Expect(enumeration.Identities).To(HaveLen(len(nodes)))
+	g.Expect(enumeration.Identities[0].Kind).To(Equal(discovery.IdentityKindUUID))
 	g.Expect(source.enumerated).To(HaveLen(len(nodes)))
 
 	observation, err := source.Observe(context.Background(), enumeration.Identities[0])
@@ -256,11 +272,13 @@ func TestSourceContractUsage(t *testing.T) {
 	g.Expect(observation.Facts.Accelerator.Model).To(Equal(teslaK80))
 
 	// A cancelled context is a hard failure outside the classification:
-	// callers treat it as unknown too.
+	// callers treat it as unknown too, and a cancelled context withdraws
+	// the node claim rather than deciding it.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err = source.Enumerate(ctx, nodes)
 	g.Expect(err).To(MatchError(context.Canceled))
+	g.Expect(source.ClaimsNode(ctx, nodes[0])).To(BeFalse())
 }
 
 // quantity builds a heap Quantity fixture with a stable string form.
