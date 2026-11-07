@@ -37,7 +37,7 @@ import (
 
 	infrastructurev1alpha1 "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/api/infrastructure/v1alpha1"
 	hardwaredevicecontroller "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/internal/controller/hardwaredevice"
-	hardwarediscoverycontroller "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/internal/controller/hardwarediscovery"
+	inventorycontroller "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/internal/controller/inventory"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -190,11 +190,15 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "hardwaredevice")
 		os.Exit(1)
 	}
-	if err := (&hardwarediscoverycontroller.HardwareDiscoveryReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+	if err := (&inventorycontroller.Reconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder(inventorycontroller.ControllerName),
+		// Scan-driven direct source reads: the API reader keeps optional
+		// APIs (resource.k8s.io/v1) from blocking startup or cache sync.
+		Sources: inventorycontroller.NewSourceFactory(mgr.GetAPIReader()),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "hardwarediscovery")
+		setupLog.Error(err, "Failed to create controller", "controller", "inventory")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
