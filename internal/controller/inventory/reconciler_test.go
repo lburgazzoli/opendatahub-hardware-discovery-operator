@@ -24,11 +24,14 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	resourcev1 "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	infrastructurev1alpha1 "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/api/infrastructure/v1alpha1"
@@ -43,7 +46,7 @@ import (
 // device creation with ownership/labels/specs on both planes, the benign
 // unknown of an unclaimed node, the singleton status, and — through the
 // instrumented client — that a second, unchanged scan performs no write
-// of any kind.
+// on children of any kind and leaves the persisted status unchanged.
 func TestReconcileCreatesOwnedDevices(t *testing.T) {
 	nodeA := testNode(nodeAName, nodeAUID, map[string]string{selectorKeyPool: "default"})
 	nodeB := testNode(nodeBName, nodeBUID, nil)
@@ -82,7 +85,7 @@ func TestReconcileCreatesOwnedDevices(t *testing.T) {
 
 	// DRA device: spec, ownership, labels, empty status.
 	draDevice := f.getDevice(deviceIDGPU)
-	f.g.Expect(draDevice.Spec).To(Equal(draDeviceSpec(nodeAName, nodeAUID, "workerpool")))
+	f.g.Expect(draDevice.Spec).To(Equal(draDeviceSpec(deviceIDGPU, nodeAName, nodeAUID, "workerpool")))
 	f.g.Expect(draDevice.Status).To(Equal(infrastructurev1alpha1.HardwareDeviceStatus{}),
 		"the inventory controller never writes device status")
 	ref := metav1.GetControllerOf(draDevice)
@@ -100,9 +103,12 @@ func TestReconcileCreatesOwnedDevices(t *testing.T) {
 	classicDevice := f.getDevice(nodeBName + "-gpu-0")
 	f.g.Expect(classicDevice.Spec).To(Equal(classicDeviceSpec(nodeBName, nodeBUID, 0)))
 
-	// Singleton status: summaries and conditions with the generation.
+	// Singleton status: summaries, phase and conditions with the
+	// generation. The framework contributes ProvisioningSucceeded; the
+	// derived Ready carries the scan's success reason and message.
 	updated := f.getSingleton()
 	f.g.Expect(updated.Status.ObservedGeneration).To(Equal(int64(1)))
+	f.g.Expect(updated.Status.Phase).To(Equal("Ready"))
 	f.g.Expect(updated.Status.NodeSummaries).To(Equal([]infrastructurev1alpha1.NodeSummary{
 		{Name: nodeAName, UID: types.UID(nodeAUID), Plane: sourceIDDRA, DeviceCount: 2, Outcome: outcomeSuccess},
 		{Name: nodeBName, UID: types.UID(nodeBUID), Plane: sourceIDClassic, DeviceCount: 2, Outcome: outcomeSuccess},
@@ -115,20 +121,40 @@ func TestReconcileCreatesOwnedDevices(t *testing.T) {
 	degraded := condition(f.g, updated, inventory.ConditionTypeDegraded)
 	f.g.Expect(degraded.Status).To(Equal(metav1.ConditionFalse))
 	f.g.Expect(degraded.Reason).To(Equal("Reconciled"))
+	provisioned := condition(f.g, updated, "ProvisioningSucceeded")
+	f.g.Expect(provisioned.Status).To(Equal(metav1.ConditionTrue))
 
-	// A second, unchanged scan writes nothing at all.
+	// A second, unchanged scan writes nothing to children and leaves the
+	// persisted singleton status unchanged (the framework's status apply
+	// may run, but it carries identical content).
 	f.client.reset()
 	f.mustReconcile()
 	f.g.Expect(f.client.creates).To(BeEmpty())
 	f.g.Expect(f.client.updates).To(BeEmpty())
 	f.g.Expect(f.client.deletes).To(BeEmpty())
-	f.g.Expect(f.client.statusUpdates).To(BeEmpty())
+	f.g.Expect(f.client.patches).To(BeEmpty())
+	f.g.Expect(f.client.applies).To(BeEmpty())
+	f.g.Expect(f.client.deleteAllOfs).To(BeEmpty())
+	f.g.Expect(f.client.statusUpdates).NotTo(ContainElement(HavePrefix("HardwareDevice/")),
+		"the inventory controller never touches device /status")
+
+	unchanged := f.getSingleton()
+	f.g.Expect(unchanged.Status.ObservedGeneration).To(Equal(int64(1)))
+	f.g.Expect(unchanged.Status.Phase).To(Equal("Ready"))
+	f.g.Expect(unchanged.Status.NodeSummaries).To(Equal(updated.Status.NodeSummaries))
+	for _, conditionType := range []string{
+		inventory.ConditionTypeReady, inventory.ConditionTypeDegraded, "ProvisioningSucceeded",
+	} {
+		again := condition(f.g, unchanged, conditionType)
+		before := condition(f.g, updated, conditionType)
+		f.g.Expect(again).To(Equal(before), "condition %q is unchanged by a no-op scan", conditionType)
+	}
 }
 
 // TestReconcileUpdatesSpecAndRetainsStatus proves a locator change is a
 // primary-endpoint spec write only: the child's existing status — written
-// by the device controller — survives every spec update, and no /status
-// call is ever made.
+// by the device controller — survives every spec update, and no device
+// /status call is ever made.
 func TestReconcileUpdatesSpecAndRetainsStatus(t *testing.T) {
 	nodeA := testNode(nodeAName, nodeAUID, nil)
 	single := testSingleton()
@@ -143,7 +169,7 @@ func TestReconcileUpdatesSpecAndRetainsStatus(t *testing.T) {
 		CollectedAt:     &metav1.Time{Time: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
 		SourceRef:       "dra/gpu.nvidia.com/oldpool",
 	}
-	oldSpec := draDeviceSpec(nodeAName, nodeAUID, "oldpool")
+	oldSpec := draDeviceSpec(deviceIDGPU, nodeAName, nodeAUID, "oldpool")
 	device := seedDevice(t, testScheme(t), single, deviceIDGPU, oldSpec, seededStatus)
 
 	f := newFixture(t, single, nodeA, device)
@@ -163,11 +189,11 @@ func TestReconcileUpdatesSpecAndRetainsStatus(t *testing.T) {
 	f.g.Expect(f.client.deletes).To(BeEmpty())
 	// The singleton's own status is this controller's to write; the
 	// device's never is.
-	f.g.Expect(f.client.statusUpdates).NotTo(ContainElement(ContainSubstring("HardwareDevice")),
+	f.g.Expect(f.client.statusUpdates).NotTo(ContainElement(HavePrefix("HardwareDevice/")),
 		"the inventory controller never touches device /status")
 
 	updated := f.getDevice(deviceIDGPU)
-	f.g.Expect(updated.Spec).To(Equal(draDeviceSpec(nodeAName, nodeAUID, "newpool")))
+	f.g.Expect(updated.Spec).To(Equal(draDeviceSpec(deviceIDGPU, nodeAName, nodeAUID, "newpool")))
 	// The fake client re-materializes metav1.Time in the process time
 	// zone, so CollectedAt compares by instant, not by location.
 	f.g.Expect(updated.Status.Accelerator).To(Equal(seededStatus.Accelerator))
@@ -178,15 +204,16 @@ func TestReconcileUpdatesSpecAndRetainsStatus(t *testing.T) {
 		"existing status survives every spec update")
 }
 
+// resourceSlicesGR is the DRA source's backing group resource, shared by
+// the read-failure fixtures.
+var resourceSlicesGR = schema.GroupResource{Group: "resource.k8s.io", Resource: "resourceslices"}
+
 // TestReconcilePruneDecisions pairs the authoritative-successful-empty
 // deletion against unknown/incomplete retention on the same seeded owned
 // child, and checks the condition classification of each unknown cause.
 func TestReconcilePruneDecisions(t *testing.T) {
-	forbidden := apierrors.NewForbidden(
-		schema.GroupResource{Group: "resource.k8s.io", Resource: "resourceslices"},
-		"", errors.New("rbac"))
-	missingAPI := apierrors.NewNotFound(
-		schema.GroupResource{Group: "resource.k8s.io", Resource: "resourceslices"}, "")
+	forbidden := apierrors.NewForbidden(resourceSlicesGR, "", errors.New("rbac"))
+	missingAPI := apierrors.NewNotFound(resourceSlicesGR, "")
 
 	cases := []struct {
 		name          string
@@ -234,7 +261,7 @@ func TestReconcilePruneDecisions(t *testing.T) {
 			g := NewWithT(t)
 			nodeA := testNode(nodeAName, nodeAUID, nil)
 			single := testSingleton()
-			spec := draDeviceSpec(nodeAName, nodeAUID, "workerpool")
+			spec := draDeviceSpec(deviceIDGPU, nodeAName, nodeAUID, "workerpool")
 			status := infrastructurev1alpha1.HardwareDeviceStatus{
 				Accelerator:     &infrastructurev1alpha1.AcceleratorDeviceStatus{Model: modelTesla},
 				AllocationPlane: sourceIDDRA,
@@ -283,6 +310,106 @@ func TestReconcilePruneDecisions(t *testing.T) {
 	}
 }
 
+// TestReconcileZeroAdvertisementPruning is the P1.1 regression: with the
+// production source factory over a fake cluster and the real DRA source,
+// deleting a node's last advertisement makes the source's own
+// enumeration of that node a successful empty set. Even though the now
+// unclaimed node folds to Unknown, the source-backed device is
+// pruned as an authoritative disappearance — while a forbidden read and
+// an incomplete snapshot retain it, and a never-claimed node stays
+// Unknown with nothing fabricated or pruned.
+func TestReconcileZeroAdvertisementPruning(t *testing.T) {
+	const (
+		gpuUUID   = "GPU-11111111-2222-3333-4444-555555555555"
+		sliceName = "gpu-node-a-pool"
+		poolName  = "gpu-node-a-pool"
+	)
+	nodeA := testNode(nodeAName, nodeAUID, nil)
+	plain := testNode(plainName, plainUID, nil)
+	single := testSingleton()
+	disableClassic(single)
+	slice := gpuSlice(sliceName, nodeAName, poolName, gpuUUID, modelTesla)
+	deviceName := discovery.DeviceName(gpuUUID)
+
+	f := newFixture(t, single, nodeA, plain, slice)
+	f.useRealSources(f.inner)
+	// Discover: the DRA-backed device exists; the never-claimed node
+	// stays a benign Unknown.
+	f.mustReconcile()
+	discovered := f.getDevice(deviceName)
+	f.g.Expect(discovered.Spec).To(Equal(draDeviceSpec(gpuUUID, nodeAName, nodeAUID, poolName)))
+	f.g.Expect(f.getSingleton().Status.NodeSummaries).To(Equal([]infrastructurev1alpha1.NodeSummary{
+		{Name: nodeAName, UID: types.UID(nodeAUID), Plane: sourceIDDRA, DeviceCount: 1, Outcome: outcomeSuccess},
+		{Name: plainName, UID: types.UID(plainUID), DeviceCount: 0, Outcome: outcomeUnknown},
+	}))
+
+	t.Run("zero advertisement prunes the source-backed device", func(t *testing.T) {
+		g := NewWithT(t)
+		f.g = g
+
+		g.Expect(f.client.Delete(context.Background(), slice)).To(Succeed())
+		f.client.reset()
+		f.mustReconcile()
+
+		f.deviceMissing(deviceName)
+
+		updated := f.getSingleton()
+		g.Expect(updated.Status.NodeSummaries).To(Equal([]infrastructurev1alpha1.NodeSummary{
+			{Name: nodeAName, UID: types.UID(nodeAUID), DeviceCount: 0, Outcome: outcomeUnknown},
+			{Name: plainName, UID: types.UID(plainUID), DeviceCount: 0, Outcome: outcomeUnknown},
+		}), "a zero-advertisement node folds to Unknown but is not an error")
+		ready := condition(g, updated, inventory.ConditionTypeReady)
+		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue),
+			"the benign unknown of a zero-advertisement node is not degraded")
+	})
+
+	t.Run("forbidden read retains the source-backed device", func(t *testing.T) {
+		g := NewWithT(t)
+		f.g = g
+
+		// Recreate the advertisement, rediscover, then fail the reads.
+		// The fake client rejects Create with a resourceVersion set.
+		slice.ResourceVersion = ""
+		g.Expect(f.client.Create(context.Background(), slice)).To(Succeed())
+		f.mustReconcile()
+		g.Expect(f.getDevice(deviceName).Spec).To(Equal(draDeviceSpec(gpuUUID, nodeAName, nodeAUID, poolName)))
+
+		f.useRealSources(interceptor.NewClient(f.inner, interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, isSlices := list.(*resourcev1.ResourceSliceList); isSlices {
+					return apierrors.NewForbidden(resourceSlicesGR, "", errors.New("rbac"))
+				}
+				return c.List(ctx, list, opts...)
+			},
+		}))
+		f.mustReconcile()
+
+		retained := f.getDevice(deviceName)
+		g.Expect(retained.Spec).To(Equal(draDeviceSpec(gpuUUID, nodeAName, nodeAUID, poolName)))
+		ready := condition(g, f.getSingleton(), inventory.ConditionTypeReady)
+		g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(ready.Reason).To(Equal("SourceForbidden"))
+
+		f.useRealSources(f.inner)
+	})
+
+	t.Run("incomplete snapshot retains the source-backed device", func(t *testing.T) {
+		g := NewWithT(t)
+		f.g = g
+
+		g.Expect(f.client.Delete(context.Background(), slice)).To(Succeed())
+		incomplete := incompleteSlicePool(sliceName+"-incomplete", nodeAName, poolName, gpuUUID, modelTesla)
+		g.Expect(f.client.Create(context.Background(), incomplete)).To(Succeed())
+		f.mustReconcile()
+
+		retained := f.getDevice(deviceName)
+		g.Expect(retained.Spec).To(Equal(draDeviceSpec(gpuUUID, nodeAName, nodeAUID, poolName)))
+		ready := condition(g, f.getSingleton(), inventory.ConditionTypeReady)
+		g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(ready.Reason).To(Equal("PoolIncomplete"))
+	})
+}
+
 // TestReconcileSelectorPruning covers deliberate selector removal: a
 // trustworthy evaluation prunes the deselected node's children
 // immediately.
@@ -327,7 +454,7 @@ func TestReconcileCollisionGuard(t *testing.T) {
 	nodeA := testNode(nodeAName, nodeAUID, nil)
 	single := testSingleton()
 
-	foreignSpec := draDeviceSpec("other-node", "other-uid", "foreignpool")
+	foreignSpec := draDeviceSpec("GPU-other", "other-node", "other-uid", "foreignpool")
 	foreignStatus := infrastructurev1alpha1.HardwareDeviceStatus{
 		AllocationPlane: sourceIDDRA,
 		SourceRef:       "dra/gpu.nvidia.com/foreignpool",
@@ -454,7 +581,7 @@ func TestReconcileNodeRecovery(t *testing.T) {
 	recovered := f.getDevice(deviceIDGPU)
 	f.g.Expect(recovered.Annotations).NotTo(HaveKey(inventory.AnnotationNodeOrphanedAt),
 		"recovery removes the grace annotation")
-	f.g.Expect(recovered.Spec).To(Equal(draDeviceSpec(nodeAName, nodeAUID, "workerpool")))
+	f.g.Expect(recovered.Spec).To(Equal(draDeviceSpec(deviceIDGPU, nodeAName, nodeAUID, "workerpool")))
 }
 
 // TestReconcileNodeReplacement covers node name reuse: the same device id
@@ -513,7 +640,7 @@ func TestReconcileNodeReplacement(t *testing.T) {
 	f.g.Expect(f.client.deletes).To(HaveLen(1), "the prior incarnation is pruned")
 	f.g.Expect(f.client.creates).To(HaveLen(1), "the fresh incarnation is created")
 	fresh := f.getDevice(deviceIDGPU)
-	f.g.Expect(fresh.Spec).To(Equal(draDeviceSpec(nodeAName, "uid-new", "workerpool")))
+	f.g.Expect(fresh.Spec).To(Equal(draDeviceSpec(deviceIDGPU, nodeAName, "uid-new", "workerpool")))
 	f.g.Expect(fresh.Status).To(Equal(infrastructurev1alpha1.HardwareDeviceStatus{}),
 		"status is never transferred between incarnations")
 
@@ -586,7 +713,7 @@ func TestReconcileInvalidConfiguration(t *testing.T) {
 			nodeA := testNode(nodeAName, nodeAUID, nil)
 			single := testSingleton()
 			tc.mutate(single)
-			spec := draDeviceSpec(nodeAName, nodeAUID, "workerpool")
+			spec := draDeviceSpec(deviceIDGPU, nodeAName, nodeAUID, "workerpool")
 			device := seedDevice(t, testScheme(t), single, deviceIDGPU, spec,
 				infrastructurev1alpha1.HardwareDeviceStatus{})
 

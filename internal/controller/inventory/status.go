@@ -17,17 +17,11 @@ limitations under the License.
 package inventory
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"slices"
 
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
-	fwconditions "github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 
 	infrastructurev1alpha1 "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/api/infrastructure/v1alpha1"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
@@ -135,92 +129,25 @@ func sortedEnumerationIDs(enumerated map[string]discovery.Enumeration) []string 
 	return ids
 }
 
-// writeStatus writes the singleton status when it changed. Conditions
-// carry the observed generation; unchanged conditions keep their last
-// transition time, so an unchanged status is never rewritten and cannot
-// loop the watch.
-func (r *Reconciler) writeStatus(
-	ctx context.Context,
-	single *infrastructurev1alpha1.HardwareDiscovery,
-	selected []nodeResult,
-	state *inventoryState,
-	issues []issue,
-) error {
-	status := buildStatus(single.Generation, single.GetConditions(), selected, state, issues)
-	if apiequality.Semantic.DeepEqual(single.Status, status) {
-		return nil
-	}
-	single.Status = status
-	if err := r.Status().Update(ctx, single); err != nil {
-		return fmt.Errorf("inventory: updating singleton status: %w", err)
-	}
-	return nil
-}
+// writeStatus and the direct singleton-status persistence of the
+// pre-migration controller are gone: the scan action mutates the typed
+// instance and its condition manager, and the framework reconciler's
+// status apply is the only status writer.
 
-// buildStatus assembles the singleton status: one summary per selected
-// node plus Ready/Degraded conditions. Existing conditions are the base
-// of the update so unchanged ones keep their last transition time.
-func buildStatus(
-	generation int64,
-	existing []fwapi.Condition,
-	selected []nodeResult,
-	state *inventoryState,
-	issues []issue,
-) infrastructurev1alpha1.HardwareDiscoveryStatus {
-	status := infrastructurev1alpha1.HardwareDiscoveryStatus{
-		Status: fwapi.Status{
-			ObservedGeneration: generation,
-		},
-	}
+// nodeSummaries builds one summary per selected node, in selection
+// order, with the owned device count of the current pass.
+func nodeSummaries(selected []nodeResult, state *inventoryState) []infrastructurev1alpha1.NodeSummary {
+	summaries := make([]infrastructurev1alpha1.NodeSummary, 0, len(selected))
 	for _, res := range selected {
-		summary := infrastructurev1alpha1.NodeSummary{
+		summaries = append(summaries, infrastructurev1alpha1.NodeSummary{
 			Name:        res.node.Name,
 			UID:         res.node.UID,
 			Plane:       string(res.selection.Plane),
-			DeviceCount: 0,
+			DeviceCount: state.countByNode(res.node.Name),
 			Outcome:     string(res.selection.Outcome),
-		}
-		if state != nil {
-			summary.DeviceCount = state.countByNode(res.node.Name)
-		}
-		status.NodeSummaries = append(status.NodeSummaries, summary)
-	}
-
-	status.SetConditions(existing)
-	if top := topIssue(issues); top != nil {
-		fwconditions.SetStatusCondition(&status, fwapi.Condition{
-			Type:               ConditionTypeReady,
-			Status:             metav1.ConditionFalse,
-			Reason:             top.reason,
-			Message:            top.message,
-			ObservedGeneration: generation,
-		})
-		fwconditions.SetStatusCondition(&status, fwapi.Condition{
-			Type:               ConditionTypeDegraded,
-			Status:             metav1.ConditionTrue,
-			Reason:             top.reason,
-			Message:            top.message,
-			ObservedGeneration: generation,
-		})
-	} else {
-		message := fmt.Sprintf("reconciled %d selected nodes and %d owned hardware devices",
-			len(selected), ownedCount(state))
-		fwconditions.SetStatusCondition(&status, fwapi.Condition{
-			Type:               ConditionTypeReady,
-			Status:             metav1.ConditionTrue,
-			Reason:             reasonReconciled,
-			Message:            message,
-			ObservedGeneration: generation,
-		})
-		fwconditions.SetStatusCondition(&status, fwapi.Condition{
-			Type:               ConditionTypeDegraded,
-			Status:             metav1.ConditionFalse,
-			Reason:             reasonReconciled,
-			Message:            message,
-			ObservedGeneration: generation,
 		})
 	}
-	return status
+	return summaries
 }
 
 // topIssue returns the most severe issue, or nil when there is none.
@@ -233,12 +160,4 @@ func topIssue(issues []issue) *issue {
 		}
 	}
 	return top
-}
-
-// ownedCount returns the owned device count, tolerating a nil state.
-func ownedCount(state *inventoryState) int {
-	if state == nil {
-		return 0
-	}
-	return len(state.ours)
 }

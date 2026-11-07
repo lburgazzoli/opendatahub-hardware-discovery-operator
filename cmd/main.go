@@ -194,10 +194,7 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "device")
 		os.Exit(1)
 	}
-	if err := (&inventorycontroller.Reconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder(inventorycontroller.ControllerName),
+	if err := (&inventorycontroller.Controller{
 		// Scan-driven direct source reads: the API reader keeps optional
 		// APIs (resource.k8s.io/v1) from blocking startup or cache sync.
 		Sources: inventorycontroller.NewSourceFactory(mgr.GetAPIReader()),

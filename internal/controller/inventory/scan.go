@@ -28,11 +28,35 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrastructurev1alpha1 "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/api/infrastructure/v1alpha1"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
 )
+
+// scanner executes one inventory scan: it owns the singleton's device
+// children through the request's framework client and reports problems
+// through the request's condition manager. The framework reconciler
+// persists the singleton status; this type never writes it directly.
+type scanner struct {
+	client   client.Client
+	scheme   *runtime.Scheme
+	recorder events.EventRecorder
+	sources  SourceFactory
+	clock    func() time.Time
+}
+
+// now returns the collector clock, defaulting to the system clock.
+func (s *scanner) now() time.Time {
+	if s.clock == nil {
+		return time.Now()
+	}
+	return s.clock()
+}
 
 // config is the validated singleton configuration of one scan.
 type config struct {
@@ -47,7 +71,7 @@ type config struct {
 // configuration. Node selection defaults to every node; a nil or empty
 // LabelSelector matches all eligible nodes. Durations fall back to the
 // approved defaults when omitted or non-positive.
-func (r *Reconciler) evaluateConfig(single *infrastructurev1alpha1.HardwareDiscovery) (config, error) {
+func (s *scanner) evaluateConfig(single *infrastructurev1alpha1.HardwareDiscovery) (config, error) {
 	cfg := config{
 		rescanPeriod: durationOr(single.Spec.RescanPeriod.Duration, defaultRescanPeriod),
 		gracePeriod:  durationOr(single.Spec.NodeGracePeriod.Duration, defaultNodeGracePeriod),
@@ -63,7 +87,7 @@ func (r *Reconciler) evaluateConfig(single *infrastructurev1alpha1.HardwareDisco
 	}
 	cfg.selector = selector
 
-	sources, err := r.Sources(single.Spec.Sources)
+	sources, err := s.sources(single.Spec.Sources)
 	if err != nil {
 		return cfg, err
 	}
@@ -213,7 +237,7 @@ func (s *inventoryState) countByNode(nodeName string) int32 {
 // SelectNode fold decides the authoritative enumeration. Unknown outcomes
 // are classified into actionable issues; a node that no source claims
 // while every source evaluated it successfully is unknown but benign.
-func (r *Reconciler) selectNodes(
+func (s *scanner) selectNodes(
 	ctx context.Context,
 	cfg config,
 	items []corev1.Node,
@@ -229,7 +253,7 @@ func (r *Reconciler) selectNodes(
 		if !cfg.selector.Matches(labels.Set(node.Labels)) {
 			continue
 		}
-		res := r.selectNode(ctx, node, cfg.sources)
+		res := s.selectNode(ctx, node, cfg.sources)
 		if res.selection.Outcome == discovery.OutcomeUnknown {
 			if issue := nodeIssue(res); issue != nil {
 				issues.addIssue(*issue)
@@ -245,7 +269,7 @@ func (r *Reconciler) selectNodes(
 // enumeration (invalid arguments, context cancellation) contribute an
 // Unknown outcome; a contract-violating enumeration is downgraded to
 // Unknown rather than trusted.
-func (r *Reconciler) selectNode(
+func (s *scanner) selectNode(
 	ctx context.Context,
 	node *corev1.Node,
 	sources discovery.Sources,
@@ -328,7 +352,7 @@ func desiredIdentities(selected []nodeResult, issues *issueLog) (map[deviceKey]d
 // covers and stamps or expires the node grace of orphaned devices. It
 // returns the requeue delay: the rescan period, or the earliest grace
 // deadline when it comes first.
-func (r *Reconciler) prune(
+func (s *scanner) prune(
 	ctx context.Context,
 	cfg config,
 	state *inventoryState,
@@ -352,7 +376,7 @@ func (r *Reconciler) prune(
 	var prunes []pruneAction
 	var stamps []*infrastructurev1alpha1.HardwareDevice
 	requeue := cfg.rescanPeriod
-	now := r.now()
+	now := s.now()
 
 	for _, name := range slices.Sorted(maps.Keys(state.ours)) {
 		device := state.ours[name]
@@ -384,7 +408,16 @@ func (r *Reconciler) prune(
 			res, isResult := resultByName[node.Name]
 			if !isResult || res.selection.Outcome != discovery.OutcomeSuccess {
 				// Unknown inventory: retain, and never annotate — the
-				// node is present.
+				// node is present. One exception: per-source
+				// authoritative emptiness. A device backed by a source
+				// whose own enumeration of this node succeeded with zero
+				// identities is authoritatively gone even when no source
+				// claims the node (a zero-advertisement node is unclaimed
+				// and folds to Unknown); a never-claimed node simply has
+				// no such devices to prune.
+				if isResult && sourceAuthoritativelyEmpty(res, device.Spec.Source.Kind) {
+					prunes = append(prunes, pruneAction{device, "authoritative disappearance"})
+				}
 				continue
 			}
 			if _, wanted := desired[deviceKeyOfSpec(device.Spec)]; !wanted {
@@ -394,24 +427,37 @@ func (r *Reconciler) prune(
 	}
 
 	for _, action := range prunes {
-		if err := r.Delete(ctx, action.device); err != nil && !apierrors.IsNotFound(err) {
+		if err := s.client.Delete(ctx, action.device); err != nil && !apierrors.IsNotFound(err) {
 			return requeue, fmt.Errorf("inventory: pruning hardware device %q: %w", action.device.Name, err)
 		}
 		state.remove(action.device.Name)
-		r.Recorder.Eventf(action.device, nil, corev1.EventTypeNormal, "DevicePruned", "Deleted",
+		s.recorder.Eventf(action.device, nil, corev1.EventTypeNormal, "DevicePruned", "Deleted",
 			"deleted hardware device: %s", action.cause)
 	}
 
 	for _, device := range stamps {
 		stampAnnotation(device, now)
-		if err := r.Update(ctx, device); err != nil {
+		if err := s.client.Update(ctx, device); err != nil {
 			return requeue, fmt.Errorf("inventory: stamping node grace on hardware device %q: %w", device.Name, err)
 		}
-		r.Recorder.Eventf(device, nil, corev1.EventTypeNormal, "NodeGraceStarted", "Retained",
+		s.recorder.Eventf(device, nil, corev1.EventTypeNormal, "NodeGraceStarted", "Retained",
 			"hosting node is absent or was recreated; device is retained for %s", cfg.gracePeriod)
 	}
 
 	return requeue, nil
+}
+
+// sourceAuthoritativelyEmpty reports whether the given source's
+// enumeration of the node succeeded with zero identities. A successful
+// empty list is authoritative for the source's own plane, so devices it
+// previously backed on the node are gone — the distinction between a
+// zero-advertisement node (prune its source-backed devices) and an
+// unclaimed node with unknown inventory (retain everything). It never
+// turns a never-claimed node into a zero-device claim: the node's
+// selection stays Unknown and no identities are fabricated.
+func sourceAuthoritativelyEmpty(res nodeResult, sourceKind string) bool {
+	enum, ok := res.enumerated[sourceKind]
+	return ok && enum.Outcome == discovery.OutcomeSuccess && len(enum.Identities) == 0
 }
 
 // orphanDeadline parses the persisted grace start of a device. A missing

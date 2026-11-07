@@ -41,7 +41,7 @@ import (
 // object name; a name held by a foreign object is never adopted, and a
 // name still held by a prior incarnation of the same id waits for the
 // grace period to prune the old object before the fresh one is created.
-func (r *Reconciler) materialize(
+func (s *scanner) materialize(
 	ctx context.Context,
 	single *infrastructurev1alpha1.HardwareDiscovery,
 	cfg config,
@@ -53,7 +53,7 @@ func (r *Reconciler) materialize(
 	for _, key := range sortedDesiredKeys(desired) {
 		identity := desired[key]
 		if existing := state.ownedByKey(key); existing != nil {
-			if err := r.ensureDevice(ctx, existing, identity, cfg.class); err != nil {
+			if err := s.ensureDevice(ctx, existing, identity, cfg.class); err != nil {
 				return err
 			}
 			continue
@@ -65,16 +65,16 @@ func (r *Reconciler) materialize(
 			issues.add(reasonNameCollision, priorityNameCollision,
 				"hardware device name %q is held by a foreign object; identity %q is skipped",
 				discovery.DeviceName(identity.ID), identity.ID)
-			r.Recorder.Eventf(single, nil, corev1.EventTypeWarning, reasonNameCollision, "Skipped",
+			s.recorder.Eventf(single, nil, corev1.EventTypeWarning, reasonNameCollision, "Skipped",
 				"derived hardware device name %q collides with a foreign object", discovery.DeviceName(identity.ID))
 		case resolution.deferred:
 			// The prior incarnation of this id still holds the
 			// deterministic name within its grace window; recreation
 			// happens once grace prunes the old object.
-			r.Recorder.Eventf(single, nil, corev1.EventTypeNormal, "DeviceRecreationDeferred", "Deferred",
+			s.recorder.Eventf(single, nil, corev1.EventTypeNormal, "DeviceRecreationDeferred", "Deferred",
 				"identity %q waits for the node grace of its prior incarnation", identity.ID)
 		default:
-			if err := r.createDevice(ctx, single, state, identity, resolution.name, cfg.class, taken); err != nil {
+			if err := s.createDevice(ctx, single, state, identity, resolution.name, cfg.class, taken); err != nil {
 				return err
 			}
 		}
@@ -131,7 +131,7 @@ func resolveDeviceName(
 // controller reference. Creation goes through the primary endpoint only;
 // the device starts with no status — the device controller is its only
 // writer.
-func (r *Reconciler) createDevice(
+func (s *scanner) createDevice(
 	ctx context.Context,
 	single *infrastructurev1alpha1.HardwareDiscovery,
 	state *inventoryState,
@@ -148,10 +148,10 @@ func (r *Reconciler) createDevice(
 		ObjectMeta: deviceObjectMeta(name, class, identity.NodeName),
 		Spec:       spec,
 	}
-	if err := controllerutil.SetControllerReference(single, device, r.Scheme); err != nil {
+	if err := controllerutil.SetControllerReference(single, device, s.scheme); err != nil {
 		return fmt.Errorf("inventory: setting controller reference on hardware device %q: %w", name, err)
 	}
-	if err := r.Create(ctx, device); err != nil {
+	if err := s.client.Create(ctx, device); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			// A concurrent writer took the name; requeue re-evaluates.
 			return fmt.Errorf("inventory: hardware device %q already exists", name)
@@ -160,7 +160,7 @@ func (r *Reconciler) createDevice(
 	}
 	state.add(device)
 	taken[name] = identity.ID
-	r.Recorder.Eventf(device, nil, corev1.EventTypeNormal, "DeviceCreated", "Created",
+	s.recorder.Eventf(device, nil, corev1.EventTypeNormal, "DeviceCreated", "Created",
 		"created hardware device for identity %q on node %q", identity.ID, identity.NodeName)
 	return nil
 }
@@ -170,7 +170,7 @@ func (r *Reconciler) createDevice(
 // (recovery removes it). Nothing is written when everything already
 // matches. Updates go through the primary endpoint only and never touch
 // the status subresource.
-func (r *Reconciler) ensureDevice(
+func (s *scanner) ensureDevice(
 	ctx context.Context,
 	existing *infrastructurev1alpha1.HardwareDevice,
 	identity discovery.Identity,
@@ -198,10 +198,10 @@ func (r *Reconciler) ensureDevice(
 		return nil
 	}
 
-	if err := r.Update(ctx, existing); err != nil {
+	if err := s.client.Update(ctx, existing); err != nil {
 		return fmt.Errorf("inventory: updating hardware device %q: %w", existing.Name, err)
 	}
-	r.Recorder.Eventf(existing, nil, corev1.EventTypeNormal, "DeviceUpdated", "Updated",
+	s.recorder.Eventf(existing, nil, corev1.EventTypeNormal, "DeviceUpdated", "Updated",
 		"reconciled hardware device spec for identity %q", identity.ID)
 	return nil
 }
