@@ -32,7 +32,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -47,6 +46,9 @@ import (
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/internal/controller/device"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/internal/controller/inventory"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
+
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
+	fwconditions "github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 )
 
 // Well-known test cluster identities and expected values, independent
@@ -333,8 +335,8 @@ func (f *fixture) getDevice(name string) *infrastructurev1alpha1.HardwareDevice 
 func observedCondition(
 	g *WithT,
 	found *infrastructurev1alpha1.HardwareDevice,
-) metav1.Condition {
-	cond := meta.FindStatusCondition(found.Status.Conditions, device.ConditionTypeObserved)
+) fwapi.Condition {
+	cond := fwconditions.FindStatusCondition(found, device.ConditionTypeObserved)
 	g.Expect(cond).NotTo(BeNil(), "the Observed condition must exist")
 	return *cond
 }
@@ -472,10 +474,12 @@ func acceleratorFacts(model string, memory string) discovery.Facts {
 // DRA observation independently of the controller mapping.
 func expectedStatus(collectedAt time.Time, model string) infrastructurev1alpha1.HardwareDeviceStatus {
 	return infrastructurev1alpha1.HardwareDeviceStatus{
-		ObservedGeneration: 1,
-		AllocationPlane:    sourceIDDRA,
-		CollectedAt:        &metav1.Time{Time: collectedAt},
-		SourceRef:          sourceIDDRA + "/" + driverNVIDIA + "/" + poolWorker,
+		Status: fwapi.Status{
+			ObservedGeneration: 1,
+		},
+		AllocationPlane: sourceIDDRA,
+		CollectedAt:     &metav1.Time{Time: collectedAt},
+		SourceRef:       sourceIDDRA + "/" + driverNVIDIA + "/" + poolWorker,
 		Accelerator: &infrastructurev1alpha1.AcceleratorDeviceStatus{
 			Model:  model,
 			Memory: mustQuantity(memoryK80),

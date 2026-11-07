@@ -26,7 +26,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -43,6 +42,9 @@ import (
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery/classic"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery/dra"
+
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
+	fwconditions "github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 )
 
 // Well-known test cluster identities.
@@ -291,8 +293,8 @@ func (f *fixture) listDevices() []infrastructurev1alpha1.HardwareDevice {
 }
 
 // condition returns one singleton condition and asserts its presence.
-func condition(g *WithT, single *infrastructurev1alpha1.HardwareDiscovery, conditionType string) metav1.Condition {
-	found := meta.FindStatusCondition(single.Status.Conditions, conditionType)
+func condition(g *WithT, single *infrastructurev1alpha1.HardwareDiscovery, conditionType string) fwapi.Condition {
+	found := fwconditions.FindStatusCondition(single, conditionType)
 	g.Expect(found).NotTo(BeNil(), "condition %q must exist", conditionType)
 	return *found
 }

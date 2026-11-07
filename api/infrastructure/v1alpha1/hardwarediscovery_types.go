@@ -20,6 +20,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 )
 
 // HardwareDiscovery is the singleton configuration of the hardware discovery
@@ -140,26 +142,35 @@ type ClassicSourceConfig struct {
 // HardwareDiscoveryStatus is the observed state of the singleton: collector
 // health and a compact per-node inventory overview. Conditions describe the
 // collector and its observations, never hardware health or free allocation
-// capacity.
+// capacity. The platform status block (phase, observedGeneration and
+// framework conditions) is embedded inline from the odh-platform-utilities
+// framework so the type satisfies fwapi.PlatformObject.
 type HardwareDiscoveryStatus struct {
-	// observedGeneration is the generation of the spec most recently
-	// observed by the singleton controller.
+	// Status is the common platform status block: phase,
+	// observedGeneration and framework api.Condition conditions.
 	// +optional
-	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-
-	// conditions describe collector/observation health. Reasons include
-	// Reconciled, SourcesUnavailable, SourceForbidden, PoolIncomplete,
-	// NameCollision, IdentityAmbiguous and InvalidConfiguration.
-	// +optional
-	// +listType=map
-	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	fwapi.Status `json:",inline"`
 
 	// nodeSummaries is a compact per-selected-node inventory overview.
 	// +optional
 	// +listType=map
 	// +listMapKey=name
 	NodeSummaries []NodeSummary `json:"nodeSummaries,omitempty"`
+}
+
+// GetStatus returns the embedded platform status block (fwapi.WithStatus).
+func (s *HardwareDiscovery) GetStatus() *fwapi.Status {
+	return &s.Status.Status
+}
+
+// GetConditions returns the platform conditions (fwapi.ConditionsAccessor).
+func (s *HardwareDiscovery) GetConditions() []fwapi.Condition {
+	return s.Status.GetConditions()
+}
+
+// SetConditions replaces the platform conditions (fwapi.ConditionsAccessor).
+func (s *HardwareDiscovery) SetConditions(conditions []fwapi.Condition) {
+	s.Status.SetConditions(conditions)
 }
 
 // NodeSummary is the per-node inventory overview of one selected node.

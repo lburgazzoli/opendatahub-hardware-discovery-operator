@@ -24,8 +24,10 @@ import (
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
+	fwconditions "github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 
 	infrastructurev1alpha1 "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/api/infrastructure/v1alpha1"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
@@ -144,7 +146,7 @@ func (r *Reconciler) writeStatus(
 	state *inventoryState,
 	issues []issue,
 ) error {
-	status := buildStatus(single.Generation, single.Status.Conditions, selected, state, issues)
+	status := buildStatus(single.Generation, single.GetConditions(), selected, state, issues)
 	if apiequality.Semantic.DeepEqual(single.Status, status) {
 		return nil
 	}
@@ -160,13 +162,15 @@ func (r *Reconciler) writeStatus(
 // of the update so unchanged ones keep their last transition time.
 func buildStatus(
 	generation int64,
-	existing []metav1.Condition,
+	existing []fwapi.Condition,
 	selected []nodeResult,
 	state *inventoryState,
 	issues []issue,
 ) infrastructurev1alpha1.HardwareDiscoveryStatus {
 	status := infrastructurev1alpha1.HardwareDiscoveryStatus{
-		ObservedGeneration: generation,
+		Status: fwapi.Status{
+			ObservedGeneration: generation,
+		},
 	}
 	for _, res := range selected {
 		summary := infrastructurev1alpha1.NodeSummary{
@@ -182,17 +186,40 @@ func buildStatus(
 		status.NodeSummaries = append(status.NodeSummaries, summary)
 	}
 
-	conditions := append([]metav1.Condition(nil), existing...)
+	status.SetConditions(existing)
 	if top := topIssue(issues); top != nil {
-		setCondition(&conditions, generation, ConditionTypeReady, metav1.ConditionFalse, top.reason, top.message)
-		setCondition(&conditions, generation, ConditionTypeDegraded, metav1.ConditionTrue, top.reason, top.message)
+		fwconditions.SetStatusCondition(&status, fwapi.Condition{
+			Type:               ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             top.reason,
+			Message:            top.message,
+			ObservedGeneration: generation,
+		})
+		fwconditions.SetStatusCondition(&status, fwapi.Condition{
+			Type:               ConditionTypeDegraded,
+			Status:             metav1.ConditionTrue,
+			Reason:             top.reason,
+			Message:            top.message,
+			ObservedGeneration: generation,
+		})
 	} else {
 		message := fmt.Sprintf("reconciled %d selected nodes and %d owned hardware devices",
 			len(selected), ownedCount(state))
-		setCondition(&conditions, generation, ConditionTypeReady, metav1.ConditionTrue, reasonReconciled, message)
-		setCondition(&conditions, generation, ConditionTypeDegraded, metav1.ConditionFalse, reasonReconciled, message)
+		fwconditions.SetStatusCondition(&status, fwapi.Condition{
+			Type:               ConditionTypeReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             reasonReconciled,
+			Message:            message,
+			ObservedGeneration: generation,
+		})
+		fwconditions.SetStatusCondition(&status, fwapi.Condition{
+			Type:               ConditionTypeDegraded,
+			Status:             metav1.ConditionFalse,
+			Reason:             reasonReconciled,
+			Message:            message,
+			ObservedGeneration: generation,
+		})
 	}
-	status.Conditions = conditions
 	return status
 }
 
@@ -214,21 +241,4 @@ func ownedCount(state *inventoryState) int {
 		return 0
 	}
 	return len(state.ours)
-}
-
-// setCondition records one condition with the observed generation.
-func setCondition(
-	conditions *[]metav1.Condition,
-	generation int64,
-	conditionType string,
-	conditionStatus metav1.ConditionStatus,
-	reason, message string,
-) {
-	meta.SetStatusCondition(conditions, metav1.Condition{
-		Type:               conditionType,
-		Status:             conditionStatus,
-		Reason:             reason,
-		Message:            message,
-		ObservedGeneration: generation,
-	})
 }

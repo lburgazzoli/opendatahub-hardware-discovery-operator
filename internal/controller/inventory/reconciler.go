@@ -44,6 +44,8 @@ import (
 
 	infrastructurev1alpha1 "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/api/infrastructure/v1alpha1"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
+
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 )
 
 const (
@@ -79,6 +81,11 @@ const (
 // selected nodes, enumerate the registered sources per node, prune what
 // authoritative evidence no longer covers, and materialize what it newly
 // covers.
+
+// Compile-time proof that the singleton satisfies the framework platform
+// object contract (fwapi.PlatformObject) through its embedded status.
+var _ fwapi.PlatformObject = &infrastructurev1alpha1.HardwareDiscovery{}
+
 type Reconciler struct {
 	client.Client
 	Scheme *runtime.Scheme

@@ -35,6 +35,8 @@ import (
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/internal/controller/inventory"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery/dra"
+
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 )
 
 // TestReconcileCreatesOwnedDevices covers the default all-node selector,
@@ -136,10 +138,10 @@ func TestReconcileUpdatesSpecAndRetainsStatus(t *testing.T) {
 			Model:  modelTesla,
 			Memory: nil,
 		},
-		AllocationPlane:    sourceIDDRA,
-		CollectedAt:        &metav1.Time{Time: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
-		SourceRef:          "dra/gpu.nvidia.com/oldpool",
-		ObservedGeneration: 3,
+		Status:          fwapi.Status{ObservedGeneration: 3},
+		AllocationPlane: sourceIDDRA,
+		CollectedAt:     &metav1.Time{Time: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+		SourceRef:       "dra/gpu.nvidia.com/oldpool",
 	}
 	oldSpec := draDeviceSpec(nodeAName, nodeAUID, "oldpool")
 	device := seedDevice(t, testScheme(t), single, deviceIDGPU, oldSpec, seededStatus)

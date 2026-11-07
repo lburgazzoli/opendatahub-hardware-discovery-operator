@@ -41,6 +41,39 @@ publishes, with zero simulator awareness on either plane. The partial
 ConfigMap-based classic adapter work is discarded. Recorded in the
 execution ledger.
 
+Amendment 4 (2026-11-07, user-directed, supersedes §2.3 and §6.4):
+**framework adoption and the device Ready contract.** The service depends
+on the published odh-platform-utilities **framework module v0.4.0**
+(`github.com/opendatahub-io/odh-platform-utilities/framework`, tag
+`framework/v0.4.0`, commit `fd6f202b`), a separate Go module from root
+`v0.6.0`. Both CRDs implement `framework/api.PlatformObject`: each typed
+status struct embeds `framework/api.Status` inline (`phase`,
+`observedGeneration`, framework `api.Condition` conditions — an atomic list
+with `severity`, a different type family from `metav1.Condition`). The
+controllers are being migrated onto the framework reconciler and action
+pipeline (§6.4); render/deploy/GC/finalizer actions are deliberately not
+wired. **Device `Ready` is inventory readiness**: True only when the device
+is eligible under current configuration and its recorded
+identity/host/locator were successfully observed; False on failed
+observation, missing/replaced host, deselection, disabled source or invalid
+config — retaining prior facts and `collectedAt`; absent/Unknown before the
+first evaluation; `Observed` remains as a diagnostic dependent. Consumers
+must also check `collectedAt` freshness when the controller is stopped.
+Normal framework status-SSA attempts on unchanged reconciliations are
+accepted; collectedAt still advances only on initial observation, facts/
+plane/provenance change or heartbeat expiry. This is a **direct v1alpha1
+PoC schema change for fresh disposable deployments**: no live-object
+migration, conversion webhook or production upgrade path is provided, and
+no new management-state behavior is claimed. Recorded in the execution
+ledger.
+
+> **Implementation stage note (task 013):** as of this amendment's schema
+> commit, the APIs, generated CRDs and controller condition helpers carry
+> the framework contract, but the controllers still run their own
+> `Reconcile` loops and status updates; the action-pipeline migration and
+> framework-derived `Ready` land in the following controller tasks, and the
+> runtime wraps the manager in `framework/manager.New` afterwards.
+
 This document is the approved concrete PoC contract governing all service
 implementation (tasks 002+). The human approved it as proposed on 2026-11-06
 in the execution session, resolving the gate choices as recorded in §1 —
@@ -93,28 +126,28 @@ All other content of this document was approved as proposed.
 | Kind | `sigs.k8s.io/kind@v0.33.0` (CLI + Go library for the harness) | published 2026-08-26; ships node images through `kindest/node:v1.37.0` |
 | Kind node image | `kindest/node:v1.34.11` | **[executed]** serves `resource.k8s.io/v1` (DRA GA since Kubernetes 1.34, default-on) |
 | Gomega | `v1.44.0` | published (DB harness uses v1.42.1; we take current) |
+| gomega-matchers | `github.com/lburgazzoli/gomega-matchers v0.6.0` | published; jq/k8s/condition matchers used by controller tests |
+| odh-platform-utilities framework | `github.com/opendatahub-io/odh-platform-utilities/framework v0.4.0` (tag `framework/v0.4.0`, commit `fd6f202b`) | published **[executed]** via proxy.golang.org (amendment 4); separate module from root v0.6.0; requires k8s.io `v0.37.1` (compatible patch raise from v0.37.0) and controller-runtime `v0.25.1` (we keep `v0.25.2`) |
 | odh-platform-tools (`make module-lint`) | `github.com/lburgazzoli/odh-platform-tools@v0.0.0-20261028215308-948ecd9b3ace` (immutable pseudo-version; repo has no tags) | proxy `@latest` resolves to exactly the inspected commit 948ecd9b |
 
 ### 2.3 Framework dependency decision
 
-**No Go dependency on `odh-platform-utilities` or `odh-platform-operator`
-internals.** Rationale **[source-inspected]**:
-
-- `odh-platform-utilities v0.6.0` (latest published) pins
-  controller-runtime `v0.23.3` / k8s.io `v0.35.x`, two minors behind our
-  v0.25.x/v0.37.x baseline; its framework (`framework/manager`,
-  `framework/controller/reconciler`) is built around manifest
-  deployment/finalizers and a platform-specific `common.Condition` type
-  (`api/common/types.go`) that is **not** `metav1.Condition`. Importing it
-  buys nothing for a discovery service and creates status-type friction
-  (see §6.4).
-- The DB-operator harness is a *pattern* reference (small `Instance`
-  interface, functional options); its actual code is test-support in a
-  foreign module and is re-implemented in our own test tree (task 010).
-
-This resolves "immutable usable dependencies at milestone 001": the service
-depends only on controller-runtime and the standard k8s.io libraries;
-framework reuse is limited to conventions, not code.
+**Superseded by amendment 4 (2026-11-07).** The original gate decision
+rejected a Go dependency on `odh-platform-utilities`/`odh-platform-operator`
+internals because root `v0.6.0` pinned controller-runtime `v0.23.3` /
+k8s.io `v0.35.x` (two minors behind our baseline) and its platform
+`common.Condition` was not `metav1.Condition`. The published **framework
+module `v0.4.0`** removes both objections: it pins controller-runtime
+`v0.25.1` / k8s.io `v0.37.1` — compatible with our `v0.25.2`/`v0.37.x`
+baseline (MVS keeps our controller-runtime and raises Kubernetes patch
+versions to `v0.37.1`) — and `framework/api` defines the platform contract
+(`PlatformObject`, `Status`, `Condition`) directly. The user directed
+adoption: both CRDs are `PlatformObject`s and the controllers run the
+framework reconciler/action pipeline (no render/deploy/GC/finalizer
+actions). The DB-operator harness remains a pattern reference re-implemented
+in our own test tree; root-module `odh-platform-operator` internals remain
+out of bounds, and root-module convenience imports are not used — simple
+types come from `framework/api`.
 
 ---
 
@@ -187,9 +220,19 @@ simulator's private details (ConfigMap names, YAML keys) exist only in
 | `status.accelerator.memory` | `resource.Quantity` | pattern `^([+-]?[0-9.]+)([eEinumkKMGTP]*[-+]?[0-9]*)$`; FGO MiB → bytes, BinarySI |
 | `status.allocationPlane` | string, enum `[classic, dra]` | which plane evidenced the device |
 | `status.collectedAt` | `metav1.Time` | collector observation clock; never copied from the producer |
-| `status.sourceRef` | string | provenance, e.g. `dra/gpu.nvidia.com/<pool>` or `classic/<ns>/<cm>`; replaced, not merged, on observed source change |
-| `status.conditions` | `[]metav1.Condition` | device observation conditions (§7.4) |
-| `status.observedGeneration` | int64 | |
+| `status.sourceRef` | string | provenance, e.g. `dra/gpu.nvidia.com/<pool>` or `classic/<node>`; replaced, not merged, on observed source change |
+| `status.phase` | string | embedded framework `api.Status` block (amendment 4): framework-derived phase |
+| `status.observedGeneration` | int64 | embedded framework `api.Status` block: last successfully observed generation under framework semantics |
+| `status.conditions` | `[]framework/api.Condition` | embedded framework `api.Status` block: **atomic list** (not the previous map-keyed `metav1.Condition` list) whose items add `severity` and `lastHeartbeatTime`; carries the device `Observed` diagnostic condition and, after the controller migration, the framework-aggregated `Ready` and `ProvisioningSucceeded` dependents |
+
+`Ready` is **inventory readiness** (amendment 4): True only when the device
+is eligible under current configuration and its recorded
+identity/host/locator were successfully observed; False on failed
+observation, missing/replaced host, deselection, disabled source or invalid
+config, with prior facts and `collectedAt` retained; absent/Unknown before
+the first evaluation. It is **not** hardware health, free allocation
+capacity, workload suitability or validation; a stopped controller cannot
+retract a stored True — consumers must also check `collectedAt` freshness.
 
 Optional unknown facts are omitted — no zero/defaulted facts, no placeholder
 structs, no vendor attribute bag. There is **no status-side class
@@ -232,15 +275,19 @@ spec:
       pool: gpu-node-a
       device: gpu-11111111-2222-3333-4444-555555555555
 status:
+  observedGeneration: 1
+  phase: Ready
   accelerator:
     model: Tesla-K80
     memory: 12635713536
   allocationPlane: dra
   collectedAt: "2026-11-06T15:32:31Z"
-  sourceRef: dra/gpu.nvidia.com/gpu-node-a  conditions:
+  sourceRef: dra/gpu.nvidia.com/gpu-node-a
+  conditions:
   - type: Observed
     status: "True"
     reason: Observed
+    observedGeneration: 1
     lastTransitionTime: "2026-11-06T15:32:31Z"
 ```
 
@@ -307,8 +354,9 @@ documented reset path.
 
 | JSON path | Type | Notes |
 |---|---|---|
-| `status.observedGeneration` | int64 | |
-| `status.conditions` | `[]metav1.Condition` | collector/observation health — **not** hardware health, **not** free-capacity (types: `Ready`, `Degraded`; reasons: `Reconciled`, `SourcesUnavailable`, `SourceForbidden`, `PoolIncomplete`, `NameCollision`, `IdentityAmbiguous`, `InvalidConfiguration`) |
+| `status.phase` | string | embedded framework `api.Status` block (amendment 4): framework-derived phase |
+| `status.observedGeneration` | int64 | embedded framework `api.Status` block: last successfully observed generation under framework semantics |
+| `status.conditions` | `[]framework/api.Condition` | embedded framework `api.Status` block (atomic list, items add `severity`): collector/observation health — **not** hardware health, **not** free-capacity (types: `Ready`, `Degraded`; reasons: `Reconciled`, `SourcesUnavailable`, `SourceForbidden`, `PoolIncomplete`, `NameCollision`, `IdentityAmbiguous`, `InvalidConfiguration`) |
 | `status.nodeSummaries` | []struct | per selected node: `name`, `uid`, `plane`, `deviceCount`, `outcome` — compact inventory overview for the demo query and future ODH consumption |
 
 ### 5.3 Example CR
@@ -330,9 +378,8 @@ spec:
     dra:
       enabled: true
       driverAllowList: [gpu.nvidia.com]
-    simulator:
+    classic:
       enabled: true
-      namespace: gpu-operator
 ```
 
 ### 5.4 Per-fact demo query/display
@@ -372,12 +419,12 @@ e2e assertions; ownership/lifecycle → ownerRef + pruning demos.
               ▼                           ▼
    ┌─────────────────────┐     ┌──────────────────────────┐
    │ pkg/discovery/dra   │     │ pkg/discovery/classic    │
-   │ resource.k8s.io/v1  │     │ FGO simulator CM reader  │
-   │ read-only client    │     │ (opt-in, PoC-only)       │
+   │ resource.k8s.io/v1  │     │ Node labels + allocatable│
+   │ read-only client    │     │ (production source)      │
    └─────────────────────┘     └──────────────────────────┘
 
- External read-only inputs: Nodes, ResourceSlices/DeviceClasses (resource.k8s.io/v1),
- ConfigMaps (simulator namespace only, adapter opt-in).
+  External read-only inputs: Nodes, ResourceSlices/DeviceClasses
+  (resource.k8s.io/v1).
  External writes: HardwareDevice (spec, singleton controller only),
  HardwareDevice/status (device controller only), HardwareDiscovery/status,
  Lease (leader election), Events.
@@ -387,13 +434,12 @@ e2e assertions; ownership/lifecycle → ownerRef + pruning demos.
 
 | Resource | singleton ctrl | device ctrl | sources | consumers |
 |---|---|---|---|---|
-| HardwareDiscovery | read spec, write status | — | — | — |
-| HardwareDiscovery/status | write | — | — | read |
-| HardwareDevice | create/delete, write spec | read spec | — | get/list/watch |
-| HardwareDevice/status | read | **only writer** | — | read |
+| HardwareDiscovery | read spec, write status (framework status SSA after the migration) | read spec | — | — |
+| HardwareDiscovery/status | write (framework `ApplyStatus`) | — | — | read |
+| HardwareDevice | create/delete, write spec | read spec; **never** any primary write | — | get/list/watch |
+| HardwareDevice/status | read | **only writer** (framework `ApplyStatus`; never the primary endpoint, including metadata/finalizers) | — | read |
 | Node | read (get/list/watch) | read | read | — |
 | ResourceSlice/DeviceClass | read (scan, guarded) | read (observe) | read-only | — |
-| ConfigMap (simulator ns) | read (scan, only if enabled) | read (observe) | read-only | — |
 | Lease / Event | write (as used) | write Events | — | — |
 
 ### 6.3 Creation / observation / deletion sequences
@@ -401,8 +447,8 @@ e2e assertions; ownership/lifecycle → ownerRef + pruning demos.
 Creation (singleton controller, per scan):
 1. Resolve selected nodes (label selector in reconcile logic, not cache
    filtering, so deselection and new matches stay observable).
-2. For each node, run plane resolution (§8.2): DRA first, classic only with
-   both extended-resource evidence and the opt-in identity source.
+2. For each node, run plane resolution (§8.2): DRA first, classic with
+   both extended-resource evidence and GFD-style labels.
 3. Source `Enumerate` → identities + locators; outcome `Success` (possibly
    empty) vs `Unknown` (§8.4).
 4. For each identity: derive name (§4.4); if absent → create with ownerRef,
@@ -427,16 +473,22 @@ Deletion:
 - Singleton deletion → real GC via ownerRef removes children; no finalizers.
 - Foreign objects are never touched.
 
-### 6.4 Platform status compatibility (explicit resolution)
+### 6.4 Platform status compatibility (amendment 4)
 
-Our CRDs use standard `metav1.Condition`. The platform-common
-`common.Condition`/`Phase` types from `odh-platform-utilities` are **not**
-imported (§2.3): they are a different type family from a framework we do not
-depend on. Future ODH orchestration consumption reads our
-`status.conditions` by type/reason string and `status.nodeSummaries`; no
-runlevel/ManagementState integration is claimed. This is the explicit
-resolution the gate asked for — metav1 and the platform types do not match,
-and we do not pretend otherwise.
+Both CRDs implement `framework/api.PlatformObject`: the typed status
+structs embed `framework/api.Status` inline, so `phase`,
+`observedGeneration` and the framework `api.Condition` list (atomic, with
+`severity`) live at the usual status paths while the typed discovery data
+(accelerator facts, allocationPlane, collectedAt, sourceRef,
+nodeSummaries) keeps its own JSON paths. The controllers run the framework
+reconciler/action pipeline; the framework performs status server-side
+apply after the actions, and normal SSA attempts on unchanged
+reconciliations are accepted. There are no shadow duplicate
+`Conditions`/`ObservedGeneration` fields. Future ODH orchestration
+consumption reads our `status.conditions` by type/reason string and
+`status.nodeSummaries`; no runlevel/ManagementState integration is claimed.
+The previous explicit "no framework dependency, metav1-only" resolution
+(§2.3) is superseded.
 
 ### 6.5 Failure-state table
 
@@ -445,7 +497,7 @@ and we do not pretend otherwise.
 | resource.k8s.io/v1 not served / Forbidden | discovery check + API error on scan | retain all facts+collectedAt; plane unknown | `SourcesUnavailable`/`SourceForbidden` |
 | Partial new pool generation | slice count < `pool.resourceSliceCount` at max generation | retain; **no** partial update, no fallback | `PoolIncomplete` |
 | Successful empty enumeration | `Outcome=Success`, zero identities for node | prune owned devices of that node | — (Ready) |
-| Simulator disabled / CM missing | adapter outcome Unknown | retain | `SourcesUnavailable` |
+| Simulator disabled / classic source disabled by configuration | `spec.sources.classic.enabled=false` | source not registered; DRA-only discovery | — (deliberate, not a failure) |
 | Duplicate/ambiguous identity (same ID twice, or same ID on two live nodes) | enumeration guard | reject both; no object created/updated | `IdentityAmbiguous` |
 | Name collision with foreign object | name derivation | skip creation | `NameCollision` |
 | Node absent or UID mismatch | node cache/read | retain during grace, then prune | node summary `outcome=Unknown`→pruned |
@@ -842,8 +894,9 @@ spec:
   loads the image into the Kind runtime; ODH `APPLICATIONS_NAMESPACE`
   injection is accounted for by namespacing the Deployment through chart
   values (documented integration metadata, not an ODH-operator change).
-- Singleton status contract for future ODH consumption: §6.4 (metav1
-  conditions + `nodeSummaries`; no platform-common types).
+- Singleton status contract for future ODH consumption: §6.4 (framework
+  `api.Condition` conditions via the embedded platform status block +
+  `nodeSummaries`).
 
 ---
 

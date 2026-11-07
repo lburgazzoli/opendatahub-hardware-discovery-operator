@@ -44,6 +44,8 @@ import (
 	infrastructurev1alpha1 "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/api/infrastructure/v1alpha1"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/internal/controller/inventory"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
+
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 )
 
 const (
@@ -90,6 +92,11 @@ type SourceFactory = inventory.SourceFactory
 // report the failure. The collector clock lives in the sources (injected
 // at construction); every time comparison in this controller is derived
 // from observation stamps, never from a wall clock read here.
+
+// Compile-time proof that the device satisfies the framework platform
+// object contract (fwapi.PlatformObject) through its embedded status.
+var _ fwapi.PlatformObject = &infrastructurev1alpha1.HardwareDevice{}
+
 type Reconciler struct {
 	client.Client
 	Scheme *runtime.Scheme

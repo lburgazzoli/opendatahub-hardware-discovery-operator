@@ -24,9 +24,11 @@ import (
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
+	fwconditions "github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 
 	infrastructurev1alpha1 "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/api/infrastructure/v1alpha1"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
@@ -46,23 +48,30 @@ func (r *Reconciler) writeObservation(
 	observation discovery.Observation,
 ) (ctrl.Result, error) {
 	status := infrastructurev1alpha1.HardwareDeviceStatus{
-		ObservedGeneration: device.Generation,
-		AllocationPlane:    string(identity.Plane),
-		CollectedAt:        &metav1.Time{Time: observation.CollectedAt},
-		SourceRef:          sourceRef(device.Spec.Source.Kind, identity.Locator),
-		Accelerator:        acceleratorStatus(observation.Facts),
+		Status: fwapi.Status{
+			ObservedGeneration: device.Generation,
+		},
+		AllocationPlane: string(identity.Plane),
+		CollectedAt:     &metav1.Time{Time: observation.CollectedAt},
+		SourceRef:       sourceRef(device.Spec.Source.Kind, identity.Locator),
+		Accelerator:     acceleratorStatus(observation.Facts),
 	}
-	// Copy before mutating: meta.SetStatusCondition updates in place,
-	// and the old conditions must stay intact for change detection.
-	conditions := append([]metav1.Condition(nil), device.Status.Conditions...)
-	setObservedCondition(&conditions, device.Generation, metav1.ConditionTrue,
-		reasonObserved, fmt.Sprintf("observed facts from source %q", device.Spec.Source.Kind))
+	// Existing conditions are the base of the update so unchanged ones
+	// keep their last transition time; the helper upserts on the copy and
+	// reports whether the condition content changed.
+	status.SetConditions(device.Status.GetConditions())
+	conditionChanged := fwconditions.SetStatusCondition(&status, fwapi.Condition{
+		Type:               ConditionTypeObserved,
+		Status:             metav1.ConditionTrue,
+		Reason:             reasonObserved,
+		Message:            fmt.Sprintf("observed facts from source %q", device.Spec.Source.Kind),
+		ObservedGeneration: device.Generation,
+	})
 
 	factsChanged := !apiequality.Semantic.DeepEqual(device.Status.Accelerator, status.Accelerator) ||
 		device.Status.AllocationPlane != status.AllocationPlane ||
 		device.Status.SourceRef != status.SourceRef ||
 		device.Status.ObservedGeneration != status.ObservedGeneration
-	conditionChanged := !equalConditions(device.Status.Conditions, conditions)
 
 	// The heartbeat bound is evaluated on the collector clock: the new
 	// observation stamp versus the persisted one. Timestamp sampling
@@ -83,7 +92,6 @@ func (r *Reconciler) writeObservation(
 		return ctrl.Result{RequeueAfter: remaining}, nil
 	}
 
-	status.Conditions = conditions
 	device.Status = status
 	if err := r.Status().Update(ctx, device); err != nil {
 		return ctrl.Result{}, fmt.Errorf("device: updating status of hardware device %q: %w", device.Name, err)
@@ -102,14 +110,20 @@ func (r *Reconciler) reportObservationFailure(
 	device *infrastructurev1alpha1.HardwareDevice,
 	observeErr error,
 ) (ctrl.Result, error) {
-	// Copy before mutating: meta.SetStatusCondition updates in place,
-	// and the old conditions must stay intact for change detection.
-	conditions := append([]metav1.Condition(nil), device.Status.Conditions...)
-	setObservedCondition(&conditions, device.Generation, metav1.ConditionFalse,
-		classifyObserveError(observeErr), observeErr.Error())
+	// Copy before mutating: the helper upserts through the accessor, and
+	// the persisted conditions must stay intact for change detection.
+	status := device.Status
+	status.SetConditions(device.Status.GetConditions())
+	conditionChanged := fwconditions.SetStatusCondition(&status, fwapi.Condition{
+		Type:               ConditionTypeObserved,
+		Status:             metav1.ConditionFalse,
+		Reason:             classifyObserveError(observeErr),
+		Message:            observeErr.Error(),
+		ObservedGeneration: device.Generation,
+	})
 
-	if !equalConditions(device.Status.Conditions, conditions) {
-		device.Status.Conditions = conditions
+	if conditionChanged {
+		device.Status = status
 		if err := r.Status().Update(ctx, device); err != nil {
 			return ctrl.Result{}, fmt.Errorf(
 				"device: updating status of hardware device %q: %w", device.Name, err)
@@ -118,42 +132,6 @@ func (r *Reconciler) reportObservationFailure(
 	// Input events (node, config, spec) drive faster retries; this
 	// requeue is the periodic safety net.
 	return ctrl.Result{RequeueAfter: defaultMaxStale}, nil
-}
-
-// setObservedCondition records the observation condition on top of the
-// existing conditions; unchanged conditions keep their last transition
-// time.
-func setObservedCondition(
-	conditions *[]metav1.Condition,
-	generation int64,
-	conditionStatus metav1.ConditionStatus,
-	reason, message string,
-) {
-	meta.SetStatusCondition(conditions, metav1.Condition{
-		Type:               ConditionTypeObserved,
-		Status:             conditionStatus,
-		Reason:             reason,
-		Message:            message,
-		ObservedGeneration: generation,
-	})
-}
-
-// equalConditions compares condition lists for content equality,
-// ignoring the last transition times (unchanged conditions keep them).
-func equalConditions(oldConditions []metav1.Condition, newConditions []metav1.Condition) bool {
-	if len(oldConditions) != len(newConditions) {
-		return false
-	}
-	for i := range oldConditions {
-		if oldConditions[i].Type != newConditions[i].Type ||
-			oldConditions[i].Status != newConditions[i].Status ||
-			oldConditions[i].Reason != newConditions[i].Reason ||
-			oldConditions[i].Message != newConditions[i].Message ||
-			oldConditions[i].ObservedGeneration != newConditions[i].ObservedGeneration {
-			return false
-		}
-	}
-	return true
 }
 
 // classifyObserveError maps an observation failure to the condition

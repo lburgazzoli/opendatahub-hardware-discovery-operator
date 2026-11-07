@@ -101,7 +101,7 @@ func TestReconcileObservesDevice(t *testing.T) {
 	// Status: facts, plane, provenance, collector-clock stamp.
 	found := f.getDevice(deviceNameGPU)
 	assertStatusMatches(f.g, found, expectedStatus(f.clock.Now(), modelTesla))
-	f.g.Expect(found.Status.Conditions).To(ContainElement(SatisfyAll(
+	f.g.Expect(found.Status.GetConditions()).To(ContainElement(SatisfyAll(
 		condition.Is(conditionTypeObserved, metav1.ConditionTrue),
 		condition.HasReason(reasonObserved),
 		condition.HasMessage(`observed facts from source "dra"`),
@@ -276,7 +276,7 @@ func TestReconcileObserveFailureRetains(t *testing.T) {
 
 			found := f.getDevice(deviceNameGPU)
 			assertStatusMatches(f.g, found, want)
-			f.g.Expect(found.Status.Conditions).To(ContainElement(SatisfyAll(
+			f.g.Expect(found.Status.GetConditions()).To(ContainElement(SatisfyAll(
 				condition.Is(conditionTypeObserved, metav1.ConditionFalse),
 				condition.HasReason(tc.reason),
 				condition.HasMessage(tc.err.Error()),
@@ -295,7 +295,7 @@ func TestReconcileObserveFailureRetains(t *testing.T) {
 			f.g.Expect(f.client.statusUpdates).To(BeEmpty())
 			after := f.getDevice(deviceNameGPU)
 			assertStatusMatches(f.g, after, want)
-			f.g.Expect(after.Status.Conditions).To(ContainElement(SatisfyAll(
+			f.g.Expect(after.Status.GetConditions()).To(ContainElement(SatisfyAll(
 				condition.Is(conditionTypeObserved, metav1.ConditionFalse),
 				condition.HasReason(tc.reason),
 				HaveField("LastTransitionTime", failed.LastTransitionTime),
@@ -377,7 +377,7 @@ func TestReconcileStandDowns(t *testing.T) {
 
 			found := f.getDevice(deviceNameGPU)
 			assertStatusMatches(f.g, found, prior)
-			f.g.Expect(found.Status.Conditions).To(BeEmpty())
+			f.g.Expect(found.Status.GetConditions()).To(BeEmpty())
 		})
 	}
 }

@@ -21,6 +21,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 )
 
 // HardwareDevice represents one whole hardware device (in this PoC, one
@@ -198,7 +200,15 @@ type ClassicSource struct {
 // the HardwareDevice controller via the /status subresource. Per-class facts
 // live in the optional struct selected by the immutable spec.class; optional
 // facts the source does not publish are omitted, never zero or defaulted.
+// The platform status block (phase, observedGeneration and framework
+// conditions) is embedded inline from the odh-platform-utilities framework
+// so the type satisfies fwapi.PlatformObject.
 type HardwareDeviceStatus struct {
+	// Status is the common platform status block: phase,
+	// observedGeneration and framework api.Condition conditions.
+	// +optional
+	fwapi.Status `json:",inline"`
+
 	// accelerator carries the observed facts of an accelerator-class device.
 	// It is present iff facts have been observed for a device whose
 	// spec.class is accelerator (enforced by CEL). Future device classes
@@ -223,18 +233,21 @@ type HardwareDeviceStatus struct {
 	// never merged, on an observed source change.
 	// +optional
 	SourceRef string `json:"sourceRef,omitempty"`
+}
 
-	// conditions describe the device observation (not hardware health and
-	// not free allocation capacity).
-	// +optional
-	// +listType=map
-	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
+// GetStatus returns the embedded platform status block (fwapi.WithStatus).
+func (d *HardwareDevice) GetStatus() *fwapi.Status {
+	return &d.Status.Status
+}
 
-	// observedGeneration is the generation of the spec most recently
-	// observed by the device controller.
-	// +optional
-	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+// GetConditions returns the platform conditions (fwapi.ConditionsAccessor).
+func (d *HardwareDevice) GetConditions() []fwapi.Condition {
+	return d.Status.GetConditions()
+}
+
+// SetConditions replaces the platform conditions (fwapi.ConditionsAccessor).
+func (d *HardwareDevice) SetConditions(conditions []fwapi.Condition) {
+	d.Status.SetConditions(conditions)
 }
 
 // AcceleratorDeviceStatus carries the observed facts of one whole
