@@ -52,8 +52,10 @@ import (
 
 const (
 	// runtimeEnvKey selects the container runtime backing the run-owned
-	// Kind clusters (podman by default, docker as the accepted override).
-	// It is set by make/e2e.mk from CONTAINER_TOOL.
+	// Kind clusters. Podman is the only supported value and the default;
+	// docker and every other value fail deterministically before any
+	// engine or cluster side effect. It is set by make/e2e.mk from
+	// CONTAINER_TOOL.
 	runtimeEnvKey = "E2E_RUNTIME"
 
 	// profileTimeout bounds one complete profile run: cluster creation,
@@ -317,7 +319,10 @@ func verifySnapshotFacts(
 }
 
 // selectRuntime resolves and verifies the container runtime prerequisite.
-// Missing prerequisites are deterministic failures, never skips.
+// Podman is the only supported runtime; the empty value means podman, and
+// docker or any other value is a deterministic failure that occurs before
+// any engine or cluster side effect — never a silent fallback. Missing
+// prerequisites are deterministic failures, never skips.
 func selectRuntime(t *testing.T) cluster.Runtime {
 	t.Helper()
 
@@ -327,9 +332,10 @@ func selectRuntime(t *testing.T) cluster.Runtime {
 	}
 
 	runtime := cluster.Runtime(value)
-	if runtime != cluster.RuntimePodman && runtime != cluster.RuntimeDocker {
-		t.Fatalf("unsupported %s=%q (supported: %s, %s)",
-			runtimeEnvKey, value, cluster.RuntimePodman, cluster.RuntimeDocker)
+	if runtime != cluster.RuntimePodman {
+		t.Fatalf("unsupported %s=%q: only %s is supported (docker is not); "+
+			"run the suite through `make test-e2e` or `make demo`, or leave %s unset for podman",
+			runtimeEnvKey, value, cluster.RuntimePodman, runtimeEnvKey)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

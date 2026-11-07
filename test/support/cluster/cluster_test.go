@@ -293,6 +293,10 @@ func TestCallerContextCancellationPropagatesHonestly(t *testing.T) {
 	g.Expect(p.deletedNames()).To(ConsistOf(p.firstCreateSpec().Name))
 }
 
+// wantUnsupportedRuntime is the shared rejection substring of every
+// unsupported-runtime case.
+const wantUnsupportedRuntime = "unsupported runtime"
+
 func TestOptionsValidation(t *testing.T) {
 	table := []struct {
 		name string
@@ -302,7 +306,17 @@ func TestOptionsValidation(t *testing.T) {
 		{
 			name: "unsupported runtime",
 			opts: []Option{WithRuntime(Runtime("k3s"))},
-			want: "unsupported runtime",
+			want: wantUnsupportedRuntime,
+		},
+		{
+			name: "docker runtime is rejected",
+			opts: []Option{WithRuntime(Runtime("docker"))},
+			want: "unsupported runtime \"docker\": only podman is supported",
+		},
+		{
+			name: "uppercase runtime is rejected",
+			opts: []Option{WithRuntime(Runtime("Podman"))},
+			want: wantUnsupportedRuntime,
 		},
 		{
 			name: "wait must fit inside create bound",
@@ -317,6 +331,63 @@ func TestOptionsValidation(t *testing.T) {
 			_, err := NewWithProvider(context.Background(), &fakeProvider{}, entry.opts...)
 			g.Expect(err).To(HaveOccurred())
 			g.Expect(err.Error()).To(ContainSubstring(entry.want))
+		})
+	}
+}
+
+// TestRuntimeOptionAcceptsOnlyPodman proves the option surface still
+// accepts the empty value (podman default) and an explicit podman, while
+// every other value fails validation before any provider or engine is
+// involved.
+func TestRuntimeOptionAcceptsOnlyPodman(t *testing.T) {
+	g := NewWithT(t)
+
+	for _, entry := range []struct {
+		name    string
+		runtime Runtime
+	}{
+		{name: "empty keeps the podman default", runtime: ""},
+		{name: "explicit podman", runtime: RuntimePodman},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			g := NewWithT(t)
+			p := &fakeProvider{}
+			inst, err := NewWithProvider(context.Background(), p,
+				WithRuntime(entry.runtime),
+				optionFunc(func(o *options) {
+					o.clientFactory = func(_ *rest.Config) (client.Client, error) {
+						return fake.NewClientBuilder().WithScheme(newFakeScheme()).Build(), nil
+					}
+				}),
+			)
+			g.Expect(err).NotTo(HaveOccurred(), "the runtime must stay accepted")
+			g.Expect(p.firstCreateSpec().Name).To(Equal(inst.Name()))
+			g.Expect(inst.Stop(context.Background())).To(Succeed())
+		})
+	}
+
+	// Docker and unknown values never reach a provider: option validation
+	// fails first, with the remedy in the message.
+	for _, value := range []string{"docker", "containerd", "podman-rootless"} {
+		_, err := NewWithProvider(context.Background(), &fakeProvider{}, WithRuntime(Runtime(value)))
+		g.Expect(err).To(HaveOccurred(), "runtime %q must be rejected", value)
+		g.Expect(err.Error()).To(ContainSubstring("only podman is supported"))
+		g.Expect(err.Error()).To(ContainSubstring("`make test-e2e`"))
+	}
+}
+
+// TestNewKindProviderRejectsNonPodman proves provider construction also
+// rejects every non-podman runtime — including docker — before any engine
+// side effect (the rejection happens before the kind provider object is
+// even built).
+func TestNewKindProviderRejectsNonPodman(t *testing.T) {
+	for _, value := range []string{"docker", "Docker", "k3s", ""} {
+		t.Run("runtime "+value, func(t *testing.T) {
+			g := NewWithT(t)
+			provider, err := newKindProvider(Runtime(value))
+			g.Expect(provider).To(BeNil(), "runtime %q must not yield a provider", value)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(wantUnsupportedRuntime))
 		})
 	}
 }

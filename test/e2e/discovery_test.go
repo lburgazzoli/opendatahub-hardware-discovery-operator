@@ -28,10 +28,10 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -66,6 +66,7 @@ import (
 	classicsource "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery/classic"
 	drasource "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery/dra"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/test/support/cluster"
+	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/test/support/controllerimage"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/test/support/helm"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/test/support/simulator"
 )
@@ -118,16 +119,6 @@ const (
 
 	// evidenceDir holds the run's evidence documents (gitignored).
 	evidenceDir = "../../dist/e2e"
-)
-
-// Environment keys carrying the locally built service image; set by
-// make/e2e.mk, which builds the image before running the suite.
-const (
-	imageRepositoryEnvKey = "E2E_CONTROLLER_IMAGE_REPOSITORY"
-	imageTagEnvKey        = "E2E_CONTROLLER_IMAGE_TAG"
-
-	defaultImageRepository = "localhost/opendatahub-hardware-discovery-operator"
-	defaultImageTag        = "e2e"
 )
 
 // Scenario timings (task 011): short rescan and heartbeat bounds keep
@@ -192,7 +183,20 @@ func demonstrateDiscovery(t *testing.T, profile simulator.Profile) {
 		&slog.HandlerOptions{Level: slog.LevelWarn})))
 
 	runtime := selectRuntime(t)
-	imageRepository, imageTag := serviceImage(t, runtime)
+
+	// The service image inputs are mandatory separate whole values with an
+	// exact published grammar, resolved and validated before any cluster
+	// is created: the service Deployment pulls the image from the ttl.sh
+	// registry, so no local image presence or registry credentials are
+	// required here. A missing or invalid input is a deterministic
+	// prerequisite failure, never a skip and never a localhost fallback.
+	image, err := controllerimage.ResolveEnv()
+	if err != nil {
+		t.Fatalf("e2e prerequisite failed: %v\n"+
+			"the discovery service image is registry-delivered; this is a deterministic failure, not a skip",
+			err)
+	}
+	t.Logf("service image %s (registry-delivered)", image.Image())
 
 	ctx, cancel := context.WithTimeout(context.Background(), demonstrationTimeout)
 	defer cancel()
@@ -219,12 +223,6 @@ func demonstrateDiscovery(t *testing.T, profile simulator.Profile) {
 	runner, err := helm.NewRunner(inst.KubeconfigPath())
 	g.Expect(err).NotTo(HaveOccurred())
 
-	// The service image is cargo in the host runtime; loading it into the
-	// exact run-owned cluster is the only registry-free delivery path.
-	imageRef := imageRepository + ":" + imageTag
-	g.Expect(inst.LoadImage(ctx, imageRef)).To(Succeed(),
-		"the locally built service image must load into the run-owned cluster")
-
 	t.Logf("installing simulator profile %s on cluster %s", profile, inst.Name())
 	g.Expect(simulator.Setup(ctx, cli, runner, profile)).To(Succeed(),
 		"the frozen approved simulator profile must install cleanly")
@@ -248,12 +246,15 @@ func demonstrateDiscovery(t *testing.T, profile simulator.Profile) {
 		}
 	}
 
-	// The service runs from its reviewed chart with the built image: real
-	// ServiceAccount, RBAC and leader election, installed through Helm
-	// only (never raw Kustomize).
+	// The service runs from its reviewed chart with the published image:
+	// real ServiceAccount, RBAC and leader election, installed through
+	// Helm only (never raw Kustomize). The chart receives the exact whole
+	// repository/tag values; Kind's containerd pulls the registry child
+	// for the node's native architecture through the normal Deployment
+	// image reference.
 	chartRef, err := helm.LocalChartRef(chartDir)
 	g.Expect(err).NotTo(HaveOccurred(), "the reviewed chart must exist at dist/chart (run `make helm-chart`)")
-	imageValues, err := helm.ControllerImageValues(imageRepository, imageTag)
+	imageValues, err := helm.ControllerImageValues(image.Repository, image.Tag)
 	g.Expect(err).NotTo(HaveOccurred())
 	t.Logf("installing the service chart %s on cluster %s", chartRef, inst.Name())
 	g.Expect(runner.Install(ctx, helm.InstallOptions{
@@ -263,6 +264,15 @@ func demonstrateDiscovery(t *testing.T, profile simulator.Profile) {
 		Values:    imageValues,
 	})).To(Succeed(), "the service chart must install cleanly with its readiness wait")
 	waitForControllerDeployment(t, ctx, cli)
+
+	// Early image evidence, captured while the controller is ready and
+	// persisted before the classic incarnation-race scenario scales the
+	// deployment down: the exact deployed image reference, the raw
+	// container image ID and the node's identity and platform. The raw
+	// fields let integration verification correlate the registry
+	// child/config digests; nothing here claims which child architecture
+	// ran beyond what the node itself reports.
+	verifyControllerImageEvidence(t, ctx, cli, profile, inst, image)
 
 	// The generated CRD constraints are validated through real API
 	// requests against this API server, never a fake-client claim.
@@ -310,37 +320,149 @@ func demonstrateDiscovery(t *testing.T, profile simulator.Profile) {
 	verifyHelmUninstallRetainsCRDs(t, ctx, cli, runner)
 }
 
-// serviceImage resolves the locally built service image reference and
-// verifies its presence in the host container runtime. A missing image is
-// a deterministic prerequisite failure with the remedy in the message,
-// never a skip.
-func serviceImage(t *testing.T, runtime cluster.Runtime) (string, string) {
+// managerContainerName is the chart-rendered manager container's name
+// (the reviewed chart's pod template names its only container "manager").
+const managerContainerName = "manager"
+
+// controllerImageEvidence records the deployed controller image facts
+// captured live while the service is ready.
+type controllerImageEvidence struct {
+	// Profile and Cluster identify the run that produced the document.
+	Profile string `json:"profile"`
+	Cluster string `json:"cluster"`
+
+	// Deployment is the rendered manager Deployment name.
+	Deployment string `json:"deployment"`
+
+	// DeploymentImage is the exact image reference the Deployment (and
+	// its pod spec) requests — the whole published repository:tag.
+	DeploymentImage string `json:"deploymentImage"`
+
+	// ContainerImageID is the raw image ID the controller container
+	// runs, as reported by the node's container runtime. It lets
+	// integration verification correlate the registry child and config
+	// digests.
+	ContainerImageID string `json:"containerImageId"`
+
+	// Pod is the observed controller pod.
+	Pod string `json:"pod"`
+
+	// Node, NodeOS and NodeArch identify the hosting node and its
+	// platform. They report what ran; no claim is made about the
+	// opposite architecture.
+	Node     string `json:"node"`
+	NodeOS   string `json:"nodeOS"`
+	NodeArch string `json:"nodeArch"`
+}
+
+// verifyControllerImageEvidence asserts, live on the ready controller,
+// that the exact published image reference is deployed and running, and
+// persists the raw evidence (deployed ref, container image ID, node
+// identity and platform) into a uniquely named file under the gitignored
+// dist/e2e directory. It runs immediately after the deployment becomes
+// ready — before the incarnation-race scenario scales it down — so later
+// runtime termination cannot erase the evidence. A registry pull or
+// readiness failure remains a real failure here, never a skip or a local
+// fallback.
+func verifyControllerImageEvidence(
+	t *testing.T,
+	ctx context.Context,
+	cli client.Client,
+	profile simulator.Profile,
+	inst cluster.Instance,
+	image controllerimage.Reference,
+) {
 	t.Helper()
+	g := NewWithT(t)
 
-	repository := strings.TrimSpace(os.Getenv(imageRepositoryEnvKey))
-	if repository == "" {
-		repository = defaultImageRepository
+	// The exact whole reference the chart received must be the one the
+	// Deployment requests: no rewrites, no defaults.
+	deployment := &appsv1.Deployment{}
+	deployKey := client.ObjectKey{Namespace: chartNamespace, Name: controllerDeployment}
+	g.Expect(cli.Get(ctx, deployKey, deployment)).To(Succeed(),
+		"the chart-rendered manager deployment must exist")
+	deployContainer := findContainerByName(deployment.Spec.Template.Spec.Containers, managerContainerName)
+	g.Expect(deployContainer).NotTo(BeNil(),
+		"the deployment must have a %q container", managerContainerName)
+	g.Expect(deployContainer.Image).To(Equal(image.Image()),
+		"the Deployment must request the exact published image reference")
+
+	// The running pod: its spec repeats the reference and its container
+	// status carries the raw image ID the node's runtime resolved.
+	pods := &corev1.PodList{}
+	g.Expect(cli.List(ctx, pods,
+		client.InNamespace(chartNamespace),
+		client.MatchingLabels(deployment.Spec.Selector.MatchLabels),
+	)).To(Succeed(), "the controller pods must be listable")
+
+	var pod *corev1.Pod
+	for i := range pods.Items {
+		if pods.Items[i].Status.Phase == corev1.PodRunning {
+			pod = &pods.Items[i]
+			break
+		}
 	}
-	tag := strings.TrimSpace(os.Getenv(imageTagEnvKey))
-	if tag == "" {
-		tag = defaultImageTag
+	g.Expect(pod).NotTo(BeNil(), "a running controller pod must exist while the deployment is ready")
+
+	podContainer := findContainerByName(pod.Spec.Containers, managerContainerName)
+	g.Expect(podContainer).NotTo(BeNil())
+	g.Expect(podContainer.Image).To(Equal(image.Image()),
+		"the running pod must request the exact published image reference")
+
+	var status *corev1.ContainerStatus
+	for i := range pod.Status.ContainerStatuses {
+		if pod.Status.ContainerStatuses[i].Name == managerContainerName {
+			status = &pod.Status.ContainerStatuses[i]
+			break
+		}
+	}
+	g.Expect(status).NotTo(BeNil(), "the %q container must report a status", managerContainerName)
+	g.Expect(status.Image).To(Equal(image.Image()))
+	g.Expect(status.ImageID).NotTo(BeEmpty(),
+		"the running controller container must report its raw image ID")
+
+	// The hosting node's identity and platform, read while the pod runs.
+	node := &corev1.Node{}
+	g.Expect(cli.Get(ctx, client.ObjectKey{Name: pod.Spec.NodeName}, node)).To(Succeed(),
+		"the controller pod's node must exist")
+	g.Expect(node.Status.NodeInfo.OperatingSystem).NotTo(BeEmpty())
+	g.Expect(node.Status.NodeInfo.Architecture).NotTo(BeEmpty())
+
+	evidence := controllerImageEvidence{
+		Profile:          profile.String(),
+		Cluster:          inst.Name(),
+		Deployment:       controllerDeployment,
+		DeploymentImage:  image.Image(),
+		ContainerImageID: status.ImageID,
+		Pod:              pod.Name,
+		Node:             node.Name,
+		NodeOS:           node.Status.NodeInfo.OperatingSystem,
+		NodeArch:         node.Status.NodeInfo.Architecture,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// Persist immediately, before any later scenario (the incarnation
+	// race) can terminate the controller, in an ignored run-, cluster-
+	// and profile-specific file.
+	data, err := json.MarshalIndent(evidence, "", "  ")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(os.MkdirAll(evidenceDir, 0o755)).To(Succeed())
+	path := filepath.Join(evidenceDir, profile.String()+"-"+inst.Name()+"-controller.json")
+	g.Expect(os.WriteFile(path, data, 0o644)).To(Succeed(),
+		"the early controller image evidence must be persisted to %s", path)
 
-	cmd := exec.CommandContext(ctx, string(runtime), "image", "inspect",
-		repository+":"+tag, "--format", "{{.Id}}")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("e2e prerequisite failed: service image %s:%s is not present in the %s runtime: %v: %s\n"+
-			"build it first (make e2e-image, or run the suite through make test-e2e / make demo)",
-			repository, tag, runtime, err, strings.TrimSpace(string(out)))
-	} else {
-		t.Logf("service image %s:%s available (%s)",
-			repository, tag, strings.TrimSpace(string(out)))
+	t.Logf("controller image evidence: deployment image %s, imageID %s, node %s (%s/%s), written to %s",
+		evidence.DeploymentImage, evidence.ContainerImageID,
+		evidence.Node, evidence.NodeOS, evidence.NodeArch, path)
+}
+
+// findContainerByName returns the container of the given name, or nil.
+func findContainerByName(containers []corev1.Container, name string) *corev1.Container {
+	for i := range containers {
+		if containers[i].Name == name {
+			return &containers[i]
+		}
 	}
-
-	return repository, tag
+	return nil
 }
 
 // waitForControllerDeployment observes the chart-rendered Deployment

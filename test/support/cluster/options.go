@@ -42,11 +42,8 @@ const (
 type Runtime string
 
 const (
-	// RuntimePodman is the default (rootless podman).
+	// RuntimePodman is the only supported runtime (rootless podman).
 	RuntimePodman Runtime = "podman"
-
-	// RuntimeDocker is the accepted override.
-	RuntimeDocker Runtime = "docker"
 )
 
 // Option configures a Kind cluster Instance.
@@ -94,8 +91,10 @@ func defaults() options {
 }
 
 func (o options) validate() error {
-	if o.runtime != RuntimePodman && o.runtime != RuntimeDocker {
-		return fmt.Errorf("unsupported runtime %q (supported: %s, %s)", o.runtime, RuntimePodman, RuntimeDocker)
+	if o.runtime != RuntimePodman {
+		return fmt.Errorf("unsupported runtime %q: only %s is supported (docker is not); "+
+			"run the suite through `make test-e2e` or `make demo`, or leave the runtime unset for podman",
+			o.runtime, RuntimePodman)
 	}
 	if o.nodeImage == "" {
 		return fmt.Errorf("node image must not be empty")
@@ -120,7 +119,11 @@ func (o options) validate() error {
 	return nil
 }
 
-// WithRuntime selects the container runtime (podman by default).
+// WithRuntime selects the container runtime. Podman is the only supported
+// value and the default; an empty value keeps the default. Every other
+// value — including docker — fails option validation and provider
+// construction before any engine side effect, and is never silently
+// ignored or mapped to another engine.
 func WithRuntime(runtime Runtime) Option {
 	return optionFunc(func(opts *options) {
 		if runtime != "" {

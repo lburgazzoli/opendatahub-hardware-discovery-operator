@@ -27,8 +27,9 @@ limitations under the License.
 //   - the kubeconfig is written to a run-private path and that exact path is
 //     handed to every create/delete/subprocess call; the ambient kubeconfig
 //     and current context are never read or written;
-//   - the pinned node image (kindest/node:v1.34.11) and an explicit runtime
-//     (podman by default, docker overridable) are always used;
+//   - the pinned node image (kindest/node:v1.34.11) and the podman
+//     runtime (the only supported engine; every other value is rejected
+//     before any engine side effect) are always used;
 //   - create/delete run through a bounded wrapper with honest timeout
 //     propagation: kind's Go provider API takes no context, so a timed-out
 //     call is reported as such and cleanup must still be attempted;
@@ -71,11 +72,11 @@ type Instance interface {
 	// talks to this cluster.
 	KubeconfigPath() string
 
-	// LoadImage makes a locally built image available to every node of the
-	// run-owned cluster. The image is taken from the host container runtime
-	// (podman by default, docker override); no registry push happens. The
-	// e2e suite uses this for the local service image before installing its
-	// Helm chart.
+	// LoadImage makes a locally available image available to every node
+	// of the run-owned cluster. The image is taken from the host podman
+	// runtime (the only supported engine); no registry push happens. The
+	// simulator-only harness verification uses this facility; the
+	// discovery service image is registry-delivered and never loaded.
 	LoadImage(ctx context.Context, image string) error
 
 	// CollectDiagnostics writes Kind node logs, cluster events and source

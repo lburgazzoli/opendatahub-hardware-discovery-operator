@@ -81,21 +81,16 @@ type kindProvider struct {
 	runtime  Runtime
 }
 
-// newKindProvider builds the real provider for the selected runtime.
-// Podman is the default; Docker is the accepted override.
+// newKindProvider builds the real provider. Podman is the only supported
+// runtime; every other value — including docker — is rejected before any
+// engine side effect.
 func newKindProvider(runtime Runtime) (Provider, error) {
-	var providerOpt kindcluster.ProviderOption
-	switch runtime {
-	case RuntimePodman:
-		providerOpt = kindcluster.ProviderWithPodman()
-	case RuntimeDocker:
-		providerOpt = kindcluster.ProviderWithDocker()
-	default:
+	if runtime != RuntimePodman {
 		return nil, errUnsupportedRuntime(runtime)
 	}
 
 	return &kindProvider{
-		provider: kindcluster.NewProvider(providerOpt),
+		provider: kindcluster.NewProvider(kindcluster.ProviderWithPodman()),
 		runtime:  runtime,
 	}, nil
 }
