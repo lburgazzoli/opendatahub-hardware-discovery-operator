@@ -494,17 +494,15 @@ type requestHold struct {
 	release chan struct{}
 	once    sync.Once
 
-	mu        sync.Mutex
-	held      *heldRequest
-	capturedC chan struct{}
+	mu   sync.Mutex
+	held *heldRequest
 }
 
 // newRequestHold builds a hold for the given body marker.
 func newRequestHold(marker []byte) *requestHold {
 	return &requestHold{
-		marker:    marker,
-		release:   make(chan struct{}),
-		capturedC: make(chan struct{}),
+		marker:  marker,
+		release: make(chan struct{}),
 	}
 }
 
@@ -550,7 +548,6 @@ func (h *requestHold) capture(req *http.Request, body []byte) *heldRequest {
 		device: deviceNameFromPath(req.URL.Path),
 		body:   body,
 	}
-	close(h.capturedC)
 	return h.held
 }
 
