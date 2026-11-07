@@ -20,8 +20,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+
+	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 )
 
 // nodeEvidencePredicate passes Node events that can change a device
@@ -34,16 +39,42 @@ import (
 // spec generation. The filtering mirrors the inventory controller's
 // Node watch (design doc §10.1: node changes map to the singleton and
 // affected devices).
-func nodeEvidencePredicate() predicate.Predicate {
+func nodeEvidencePredicate(scheme *runtime.Scheme) predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldNode, oldOK := e.ObjectOld.(*corev1.Node)
-			newNode, newOK := e.ObjectNew.(*corev1.Node)
+			oldNode, oldOK := asNode(scheme, e.ObjectOld)
+			newNode, newOK := asNode(scheme, e.ObjectNew)
 			if !oldOK || !newOK {
 				return false
 			}
 			return nodeEvidenceChanged(oldNode, newNode)
 		},
+	}
+}
+
+// asNode converts a watched object to a typed Node. The Node watch is
+// registered as unstructured — the framework client's cache
+// representation — so the common path decodes an unstructured object with
+// the core Node kind; a typed Node is accepted unchanged. Anything else,
+// or an undecodable object, is not a Node event for this controller. The
+// manager's scheme drives the framework conversion helper, which also
+// re-checks that the scheme knows the core Node kind.
+func asNode(scheme *runtime.Scheme, obj client.Object) (*corev1.Node, bool) {
+	switch typed := obj.(type) {
+	case *corev1.Node:
+		return typed, true
+	case *unstructured.Unstructured:
+		gvk := typed.GroupVersionKind()
+		if gvk.Group != "" || gvk.Kind != "Node" {
+			return nil, false
+		}
+		node := &corev1.Node{}
+		if err := fwresources.ObjectFromUnstructured(scheme, typed, node); err != nil {
+			return nil, false
+		}
+		return node, true
+	default:
+		return nil, false
 	}
 }
 

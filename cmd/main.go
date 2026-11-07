@@ -188,9 +188,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&devicecontroller.Reconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+	if err := (&devicecontroller.Controller{
 		// The same production source factory as the inventory
 		// controller: both resolve devices through identically
 		// configured sources, with scan-driven direct reads.

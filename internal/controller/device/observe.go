@@ -17,15 +17,11 @@ limitations under the License.
 package device
 
 import (
-	"context"
 	"fmt"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrastructurev1alpha1 "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/api/infrastructure/v1alpha1"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
@@ -86,48 +82,14 @@ func durationOr(d time.Duration, fallback time.Duration) time.Duration {
 	return fallback
 }
 
-// standDown reports whether the device must not be observed right now:
-// its spec does not validate against the current configuration and
-// cluster state, so a stale queued request cannot freshen a deselected
-// or different-incarnation device. Standing down never writes.
-func (r *Reconciler) standDown(
-	ctx context.Context,
-	device *infrastructurev1alpha1.HardwareDevice,
-	cfg config,
-) (bool, error) {
-	if device.Spec.Class != cfg.class {
-		// Class coverage moved: not this controller's call to prune or
-		// to keep observing a class the singleton no longer discovers.
-		return true, nil
-	}
-	if sourceByID(cfg.sources, device.Spec.Source.Kind) == nil {
-		// The device's source is disabled in the current
-		// configuration: no trustworthy observation is possible.
-		return true, nil
-	}
-
-	node := &corev1.Node{}
-	if err := r.Get(ctx, client.ObjectKey{Name: device.Spec.Host.Name}, node); err != nil {
-		if apierrors.IsNotFound(err) {
-			// Absent node: retention and grace belong to the inventory
-			// controller; there is nothing here to observe.
-			return true, nil
-		}
-		return false, fmt.Errorf("device: fetching node %q: %w", device.Spec.Host.Name, err)
-	}
-	if node.UID != device.Spec.Host.UID {
-		// Different node incarnation under the same name: the spec
-		// belongs to the old incarnation, and observations must never
-		// freshen it or transfer facts to the new one.
-		return true, nil
-	}
-	if !cfg.selector.Matches(labels.Set(node.Labels)) {
-		// Deliberately deselected: the inventory controller decides the
-		// lifecycle; observation stands down.
-		return true, nil
-	}
-	return false, nil
-}
+// standDown and its zero-write semantics are gone: the eligibility
+// revalidation lives in ineligibility (action.go) and reports a
+// diagnostic Observed=False instead, so the framework derives
+// Ready=False rather than retaining a misleading old Ready=True. The
+// writeObservation/reportObservationFailure status writers are gone
+// too: the observation action mutates the typed instance and its
+// condition manager, and the framework reconciler's status apply is
+// the only status writer.
 
 // resolveIdentity reconstructs the discovery identity the spec records
 // and resolves the source that must observe it. The locator mapping is

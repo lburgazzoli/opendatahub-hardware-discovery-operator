@@ -17,7 +17,6 @@ limitations under the License.
 package device
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -25,113 +24,62 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	ctrl "sigs.k8s.io/controller-runtime"
-
-	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
-	fwconditions "github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 
 	infrastructurev1alpha1 "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/api/infrastructure/v1alpha1"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery/dra"
 )
 
-// writeObservation persists a successful observation. Facts, plane,
-// provenance and the observed generation are written through /status
-// only when they changed, or as the maxStale heartbeat when the
-// persisted collection time fell out of bounds; an unchanged fresh
-// observation writes nothing at all.
-func (r *Reconciler) writeObservation(
-	ctx context.Context,
+// recordObservation applies a successful observation to the device
+// status in memory; the framework's status apply is the only writer, so
+// a repeated identical apply is allowed and must not resample the
+// collection time. It returns the success message and the next
+// heartbeat requeue: the initial observation, changed
+// facts/plane/provenance, or an age strictly beyond maxStale advances
+// collectedAt from the source's collector clock and requeues for the
+// full bound; an unchanged fresh observation keeps the persisted stamp
+// and requeues for the remaining bound — promptly at the exact
+// boundary, where a zero requeue would park the device until an input
+// event. Generation changes and condition-only recovery never refresh
+// facts.
+func recordObservation(
 	device *infrastructurev1alpha1.HardwareDevice,
 	cfg config,
 	identity discovery.Identity,
 	observation discovery.Observation,
-) (ctrl.Result, error) {
-	status := infrastructurev1alpha1.HardwareDeviceStatus{
-		Status: fwapi.Status{
-			ObservedGeneration: device.Generation,
-		},
-		AllocationPlane: string(identity.Plane),
-		CollectedAt:     &metav1.Time{Time: observation.CollectedAt},
-		SourceRef:       sourceRef(device.Spec.Source.Kind, identity.Locator),
-		Accelerator:     acceleratorStatus(observation.Facts),
-	}
-	// Existing conditions are the base of the update so unchanged ones
-	// keep their last transition time; the helper upserts on the copy and
-	// reports whether the condition content changed.
-	status.SetConditions(device.Status.GetConditions())
-	conditionChanged := fwconditions.SetStatusCondition(&status, fwapi.Condition{
-		Type:               ConditionTypeObserved,
-		Status:             metav1.ConditionTrue,
-		Reason:             reasonObserved,
-		Message:            fmt.Sprintf("observed facts from source %q", device.Spec.Source.Kind),
-		ObservedGeneration: device.Generation,
-	})
+) (string, time.Duration) {
+	facts := acceleratorStatus(observation.Facts)
+	provenance := sourceRef(device.Spec.Source.Kind, identity.Locator)
+	plane := string(identity.Plane)
 
-	factsChanged := !apiequality.Semantic.DeepEqual(device.Status.Accelerator, status.Accelerator) ||
-		device.Status.AllocationPlane != status.AllocationPlane ||
-		device.Status.SourceRef != status.SourceRef ||
-		device.Status.ObservedGeneration != status.ObservedGeneration
+	// Facts equality excludes collectedAt: timestamp sampling alone is
+	// not a facts change.
+	factsChanged := !apiequality.Semantic.DeepEqual(device.Status.Accelerator, facts) ||
+		device.Status.AllocationPlane != plane ||
+		device.Status.SourceRef != provenance
 
 	// The heartbeat bound is evaluated on the collector clock: the new
-	// observation stamp versus the persisted one. Timestamp sampling
-	// alone is not a facts change — only exceeding maxStale rewrites.
-	stale := device.Status.CollectedAt == nil ||
-		observation.CollectedAt.Sub(device.Status.CollectedAt.Time) > cfg.maxStale
-
-	if !factsChanged && !conditionChanged && !stale {
-		// Unchanged fresh facts: no write. Requeue for the heartbeat
-		// exactly when the bound is next exceeded. Not stale means the
-		// age is within the bound, so the remaining time is positive —
-		// except at the exact boundary, where a zero requeue would park
-		// the device until an input event; requeue promptly there.
-		remaining := cfg.maxStale - observation.CollectedAt.Sub(device.Status.CollectedAt.Time)
-		if remaining <= 0 {
-			remaining = time.Second
-		}
-		return ctrl.Result{RequeueAfter: remaining}, nil
+	// observation stamp versus the persisted one.
+	initial := device.Status.CollectedAt == nil
+	age := time.Duration(0)
+	if !initial {
+		age = observation.CollectedAt.Sub(device.Status.CollectedAt.Time)
 	}
 
-	device.Status = status
-	if err := r.Status().Update(ctx, device); err != nil {
-		return ctrl.Result{}, fmt.Errorf("device: updating status of hardware device %q: %w", device.Name, err)
-	}
-	return ctrl.Result{RequeueAfter: cfg.maxStale}, nil
-}
+	device.Status.Accelerator = facts
+	device.Status.AllocationPlane = plane
+	device.Status.SourceRef = provenance
 
-// reportObservationFailure records a failed observation as the Observed
-// condition. Facts, collection time, provenance and the observed
-// generation of the last successful observation are all retained — a
-// failure never makes stale facts look freshly collected — and an
-// unchanged failure condition is not rewritten, so retries cannot loop
-// on writes.
-func (r *Reconciler) reportObservationFailure(
-	ctx context.Context,
-	device *infrastructurev1alpha1.HardwareDevice,
-	observeErr error,
-) (ctrl.Result, error) {
-	// Copy before mutating: the helper upserts through the accessor, and
-	// the persisted conditions must stay intact for change detection.
-	status := device.Status
-	status.SetConditions(device.Status.GetConditions())
-	conditionChanged := fwconditions.SetStatusCondition(&status, fwapi.Condition{
-		Type:               ConditionTypeObserved,
-		Status:             metav1.ConditionFalse,
-		Reason:             classifyObserveError(observeErr),
-		Message:            observeErr.Error(),
-		ObservedGeneration: device.Generation,
-	})
-
-	if conditionChanged {
-		device.Status = status
-		if err := r.Status().Update(ctx, device); err != nil {
-			return ctrl.Result{}, fmt.Errorf(
-				"device: updating status of hardware device %q: %w", device.Name, err)
-		}
+	message := fmt.Sprintf("observed facts from source %q", device.Spec.Source.Kind)
+	if initial || factsChanged || age > cfg.maxStale {
+		device.Status.CollectedAt = &metav1.Time{Time: observation.CollectedAt}
+		return message, cfg.maxStale
 	}
-	// Input events (node, config, spec) drive faster retries; this
-	// requeue is the periodic safety net.
-	return ctrl.Result{RequeueAfter: defaultMaxStale}, nil
+	remaining := cfg.maxStale - age
+	if remaining <= 0 {
+		remaining = time.Second
+	}
+	return message, remaining
 }
 
 // classifyObserveError maps an observation failure to the condition

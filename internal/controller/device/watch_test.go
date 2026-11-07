@@ -23,16 +23,25 @@ import (
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apiresource "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	infrastructurev1alpha1 "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/api/infrastructure/v1alpha1"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
+
+	fwclient "github.com/opendatahub-io/odh-platform-utilities/framework/client"
+	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 )
 
 const (
@@ -42,6 +51,8 @@ const (
 	watchNodeB = "gpu-node-b"
 	// watchGPUNames is the extended resource of classic-plane evidence.
 	watchGPUNames = "nvidia.com/gpu"
+	// watchGFDModel is a GFD-style node label of classic devices.
+	watchGFDModel = "feature.node.kubernetes.io/nvidia-model"
 )
 
 // baseNode builds a Node carrying classic-plane evidence.
@@ -62,13 +73,51 @@ func baseNode() *corev1.Node {
 	}
 }
 
+// unstructuredOf converts a typed object into the unstructured
+// representation its watch delivers, carrying the given GVK.
+func unstructuredOf(t *testing.T, gvk schema.GroupVersionKind, obj runtime.Object) *unstructured.Unstructured {
+	t.Helper()
+	u, err := fwresources.ToUnstructured(obj)
+	if err != nil {
+		t.Fatalf("fixture: converting %T to unstructured: %v", obj, err)
+	}
+	u.SetGroupVersionKind(gvk)
+	return u
+}
+
+// unstructuredNode converts a typed Node into the representation the
+// Node watch delivers.
+func unstructuredNode(t *testing.T, node *corev1.Node) *unstructured.Unstructured {
+	t.Helper()
+	return unstructuredOf(t, schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Node"}, node)
+}
+
+// watchScheme builds a scheme with the core and infrastructure types.
+func watchScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	utilruntime.Must(corev1.AddToScheme(scheme))
+	utilruntime.Must(infrastructurev1alpha1.AddToScheme(scheme))
+	return scheme
+}
+
+// mapperClient builds the framework-coherent client the production
+// mappers list through, over a fake cluster seeded with the objects.
+func mapperClient(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	return fwclient.New(fake.NewClientBuilder().
+		WithScheme(watchScheme(t)).
+		WithObjects(objs...).
+		Build())
+}
+
 // TestNodeEvidencePredicate proves the Node watch passes discovery
 // evidence and lifecycle changes while filtering routine status churn,
 // so no relevant Node change is dropped and no heartbeat re-observes
-// devices.
+// devices. Every case is exercised through both the typed and the
+// unstructured watch representation.
 func TestNodeEvidencePredicate(t *testing.T) {
-	g := NewWithT(t)
-	predicate := nodeEvidencePredicate()
+	nodeFilter := nodeEvidencePredicate(watchScheme(t))
 
 	cases := []struct {
 		name string
@@ -81,7 +130,17 @@ func TestNodeEvidencePredicate(t *testing.T) {
 			old:  baseNode,
 			new: func() *corev1.Node {
 				node := baseNode()
-				node.Labels["feature.node.kubernetes.io/nvidia-model"] = "Tesla-K80"
+				node.Labels[watchGFDModel] = "Tesla-K80"
+				return node
+			},
+			pass: true,
+		},
+		{
+			name: "selector label change passes",
+			old:  baseNode,
+			new: func() *corev1.Node {
+				node := baseNode()
+				node.Labels["pool"] = "other"
 				return node
 			},
 			pass: true,
@@ -111,7 +170,8 @@ func TestNodeEvidencePredicate(t *testing.T) {
 			old:  baseNode,
 			new: func() *corev1.Node {
 				node := baseNode()
-				node.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Time}
+				now := metav1.Now()
+				node.DeletionTimestamp = &now
 				return node
 			},
 			pass: true,
@@ -134,34 +194,54 @@ func TestNodeEvidencePredicate(t *testing.T) {
 			pass: false,
 		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			g := NewWithT(t)
-			g.Expect(predicate.Update(event.UpdateEvent{
-				ObjectOld: tc.old(),
-				ObjectNew: tc.new(),
-			})).To(Equal(tc.pass))
-		})
-	}
 
-	// Creation, deletion and generic events pass (nil funcs default
-	// true): a new node incarnation must reach the devices.
-	g.Expect(predicate.Create(event.CreateEvent{Object: baseNode()})).To(BeTrue())
-	g.Expect(predicate.Delete(event.DeleteEvent{Object: baseNode()})).To(BeTrue())
-	g.Expect(predicate.Generic(event.GenericEvent{Object: baseNode()})).To(BeTrue())
+	for _, tc := range cases {
+		for _, representation := range []string{"typed", "unstructured"} {
+			t.Run(tc.name+"/"+representation, func(t *testing.T) {
+				g := NewWithT(t)
+				var oldObj client.Object = tc.old()
+				var newObj client.Object = tc.new()
+				if representation == "unstructured" {
+					oldObj = unstructuredNode(t, tc.old())
+					newObj = unstructuredNode(t, tc.new())
+				}
+				g.Expect(nodeFilter.Update(event.UpdateEvent{
+					ObjectOld: oldObj,
+					ObjectNew: newObj,
+				})).To(Equal(tc.pass))
+			})
+		}
+	}
 }
 
-// watchScheme builds a scheme with the core and infrastructure types.
-func watchScheme(t *testing.T) *runtime.Scheme {
-	t.Helper()
-	scheme := runtime.NewScheme()
-	if err := corev1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	if err := infrastructurev1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	return scheme
+// TestNodeEvidencePredicateNonNodeUpdates proves a non-Node update event
+// (a misconfigured watch) is dropped rather than crashing the predicate,
+// including unstructured objects of a foreign kind.
+func TestNodeEvidencePredicateNonNodeUpdates(t *testing.T) {
+	g := NewWithT(t)
+	nodeFilter := nodeEvidencePredicate(watchScheme(t))
+
+	g.Expect(nodeFilter.Update(event.UpdateEvent{
+		ObjectOld: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cm"}},
+		ObjectNew: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cm"}},
+	})).To(BeFalse())
+
+	foreignGVK := schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"}
+	g.Expect(nodeFilter.Update(event.UpdateEvent{
+		ObjectOld: unstructuredOf(t, foreignGVK, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cm"}}),
+		ObjectNew: unstructuredOf(t, foreignGVK, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cm"}}),
+	})).To(BeFalse())
+}
+
+// TestNodeEvidencePredicateLifecycleEvents proves create and delete
+// events pass by default: a new node incarnation must reach the devices
+// and a deleted one re-evaluate them.
+func TestNodeEvidencePredicateLifecycleEvents(t *testing.T) {
+	g := NewWithT(t)
+	nodeFilter := nodeEvidencePredicate(watchScheme(t))
+
+	g.Expect(nodeFilter.Create(event.CreateEvent{Object: baseNode()})).To(BeTrue())
+	g.Expect(nodeFilter.Delete(event.DeleteEvent{Object: baseNode()})).To(BeTrue())
 }
 
 // namedDevice builds a device labeled onto one node.
@@ -179,12 +259,12 @@ func namedDevice(name string, node string) *infrastructurev1alpha1.HardwareDevic
 // transitions must be re-evaluated everywhere.
 func TestAllDevicesMapper(t *testing.T) {
 	g := NewWithT(t)
-	r := &Reconciler{Client: fake.NewClientBuilder().
-		WithScheme(watchScheme(t)).
-		WithObjects(namedDevice("gpu-a", watchNodeA), namedDevice("gpu-b", watchNodeB)).
-		Build()}
+	mapper := allDevices(mapperClient(t,
+		namedDevice("gpu-a", watchNodeA),
+		namedDevice("gpu-b", watchNodeB),
+	))
 
-	requests := r.allDevices(context.Background(), &infrastructurev1alpha1.HardwareDiscovery{})
+	requests := mapper(context.Background(), &infrastructurev1alpha1.HardwareDiscovery{})
 	g.Expect(requests).To(ConsistOf(
 		reconcile.Request{NamespacedName: types.NamespacedName{Name: "gpu-a"}},
 		reconcile.Request{NamespacedName: types.NamespacedName{Name: "gpu-b"}},
@@ -193,20 +273,19 @@ func TestAllDevicesMapper(t *testing.T) {
 
 // TestDevicesOnNodeMapper proves a node evidence change maps to exactly
 // the devices hosted on that node, through the service-written node
-// label index.
+// label index. The watched object is the unstructured cache
+// representation, but only its name may be read.
 func TestDevicesOnNodeMapper(t *testing.T) {
 	g := NewWithT(t)
-	r := &Reconciler{Client: fake.NewClientBuilder().
-		WithScheme(watchScheme(t)).
-		WithObjects(
-			namedDevice("gpu-a-0", watchNodeA),
-			namedDevice("gpu-a-1", watchNodeA),
-			namedDevice("gpu-b-0", watchNodeB),
-		).
-		Build()}
+	mapper := devicesOnNode(mapperClient(t,
+		namedDevice("gpu-a-0", watchNodeA),
+		namedDevice("gpu-a-1", watchNodeA),
+		namedDevice("gpu-b-0", watchNodeB),
+	))
 
-	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: watchNodeA}}
-	requests := r.devicesOnNode(context.Background(), node)
+	requests := mapper(context.Background(), unstructuredNode(t, &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: watchNodeA},
+	}))
 	g.Expect(requests).To(ConsistOf(
 		reconcile.Request{NamespacedName: types.NamespacedName{Name: "gpu-a-0"}},
 		reconcile.Request{NamespacedName: types.NamespacedName{Name: "gpu-a-1"}},
@@ -218,11 +297,34 @@ func TestDevicesOnNodeMapper(t *testing.T) {
 func TestDevicesOnNodeMapperUnlabelled(t *testing.T) {
 	g := NewWithT(t)
 	plain := &infrastructurev1alpha1.HardwareDevice{ObjectMeta: metav1.ObjectMeta{Name: "gpu-plain"}}
-	r := &Reconciler{Client: fake.NewClientBuilder().
-		WithScheme(watchScheme(t)).
-		WithObjects(plain).
-		Build()}
+	mapper := devicesOnNode(mapperClient(t, plain))
 
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: watchNodeA}}
-	g.Expect(r.devicesOnNode(context.Background(), node)).To(BeEmpty())
+	g.Expect(mapper(context.Background(), node)).To(BeEmpty())
+}
+
+// TestMappersListFailure proves a failed device list — an unavailable
+// cache — maps to no requests instead of panicking: the watch is
+// dropped, and the next event or reconcile recovers.
+func TestMappersListFailure(t *testing.T) {
+	g := NewWithT(t)
+	failing := interceptor.NewClient(fake.NewClientBuilder().
+		WithScheme(watchScheme(t)).
+		WithObjects(namedDevice("gpu-a", watchNodeA)).
+		Build(), interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			return apierrors.NewServerTimeout(schema.GroupResource{
+				Group:    "infrastructure.platform.opendatahub.io",
+				Resource: "hardwaredevices",
+			}, "list", 1)
+		},
+	})
+
+	single := allDevices(failing)
+	g.Expect(single(context.Background(), &infrastructurev1alpha1.HardwareDiscovery{})).To(BeEmpty())
+
+	node := devicesOnNode(failing)
+	g.Expect(node(context.Background(), &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: watchNodeA},
+	})).To(BeEmpty())
 }

@@ -24,23 +24,26 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	// The blank import registers the Kubernetes object converters (the
-	// typed client.Object → unstructured mapping) that the jq matchers
-	// rely on.
-	"github.com/lburgazzoli/gomega-matchers/pkg/matchers/jq"
-	_ "github.com/lburgazzoli/gomega-matchers/pkg/matchers/k8s"
-
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/cache/informertest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	ctrlmanager "sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	ctrlrecorder "sigs.k8s.io/controller-runtime/pkg/recorder"
 
 	infrastructurev1alpha1 "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/api/infrastructure/v1alpha1"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/internal/controller/device"
@@ -49,6 +52,7 @@ import (
 
 	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 	fwconditions "github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
+	fwreconciler "github.com/opendatahub-io/odh-platform-utilities/framework/controller/reconciler"
 )
 
 // Well-known test cluster identities and expected values, independent
@@ -77,6 +81,8 @@ const (
 	// conditionTypeObserved is the observation condition type, computed
 	// independently of the production constant.
 	conditionTypeObserved = "Observed"
+	conditionTypeReady    = "Ready"
+	conditionTypeProv     = "ProvisioningSucceeded"
 
 	identityKindUUID      = "uuid"
 	identityKindNodeIndex = "nodeIndex"
@@ -87,6 +93,9 @@ const (
 	// maxStaleDefault mirrors the design default (10m); test values are
 	// computed independently of the production constant.
 	maxStaleDefault = 10 * time.Minute
+
+	phaseReady    = "Ready"
+	phaseNotReady = "Not Ready"
 )
 
 // fixtureStart is the fake clock's epoch, shared by status seeds.
@@ -139,90 +148,6 @@ func (s *fakeSource) Observe(_ context.Context, id discovery.Identity) (discover
 	return discovery.Observation{Identity: id, Facts: s.facts, CollectedAt: s.clock.Now()}, nil
 }
 
-// trackingClient records every primary-resource write and every
-// subresource write; write instrumentation, not resourceVersion
-// inference, proves no-op behavior and spec/status separation.
-type trackingClient struct {
-	client.Client
-	creates       []string
-	updates       []string
-	deletes       []string
-	statusUpdates []string
-}
-
-func (c *trackingClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
-	c.creates = append(c.creates, objectRef(obj))
-	return c.Client.Create(ctx, obj, opts...)
-}
-
-func (c *trackingClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
-	c.updates = append(c.updates, objectRef(obj))
-	return c.Client.Update(ctx, obj, opts...)
-}
-
-func (c *trackingClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
-	c.deletes = append(c.deletes, objectRef(obj))
-	return c.Client.Delete(ctx, obj, opts...)
-}
-
-func (c *trackingClient) Status() client.SubResourceWriter {
-	return &trackingStatusWriter{delegate: c.Client.Status(), recorded: &c.statusUpdates}
-}
-
-// reset clears the recorded writes between reconciliations.
-func (c *trackingClient) reset() {
-	c.creates = nil
-	c.updates = nil
-	c.deletes = nil
-	c.statusUpdates = nil
-}
-
-// expectNoPrimaryWrites proves the device controller never touches the
-// primary endpoint.
-func (c *trackingClient) expectNoPrimaryWrites(g *WithT) {
-	g.Expect(c.creates).To(BeEmpty(), "the device controller never creates objects")
-	g.Expect(c.updates).To(BeEmpty(), "the device controller never writes the primary endpoint")
-	g.Expect(c.deletes).To(BeEmpty(), "the device controller never deletes objects")
-}
-
-type trackingStatusWriter struct {
-	delegate client.SubResourceWriter
-	recorded *[]string
-}
-
-func (w *trackingStatusWriter) Create(
-	ctx context.Context,
-	obj client.Object,
-	subResource client.Object,
-	opts ...client.SubResourceCreateOption,
-) error {
-	*w.recorded = append(*w.recorded, objectRef(obj))
-	return w.delegate.Create(ctx, obj, subResource, opts...)
-}
-
-func (w *trackingStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
-	*w.recorded = append(*w.recorded, objectRef(obj))
-	return w.delegate.Update(ctx, obj, opts...)
-}
-
-func (w *trackingStatusWriter) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
-	*w.recorded = append(*w.recorded, objectRef(obj))
-	return w.delegate.Patch(ctx, obj, patch, opts...)
-}
-
-func (w *trackingStatusWriter) Apply(
-	ctx context.Context,
-	obj runtime.ApplyConfiguration,
-	opts ...client.SubResourceApplyOption,
-) error {
-	*w.recorded = append(*w.recorded, fmt.Sprintf("%T", obj))
-	return w.delegate.Apply(ctx, obj, opts...)
-}
-
-func objectRef(obj client.Object) string {
-	return fmt.Sprintf("%T/%s", obj, obj.GetName())
-}
-
 // fakeClock is the injected collector clock; the fake source stamps
 // observations with it.
 type fakeClock struct {
@@ -233,22 +158,129 @@ func (c *fakeClock) Now() time.Time { return c.now }
 
 func (c *fakeClock) advance(d time.Duration) { c.now = c.now.Add(d) }
 
-// fixture wires a Reconciler against a fake cluster, scripted sources
-// and a fake clock. The source factory honors the singleton's source
-// enablement exactly like the production factory: a nil arm or a nil
-// Enabled defaults to enabled.
-type fixture struct {
-	t       *testing.T
-	g       *WithT
-	client  *trackingClient
-	clock   *fakeClock
-	scheme  *runtime.Scheme
-	sources []*fakeSource
+// writeLog records every controller write, split by endpoint: primary
+// Create/Update/Patch/Apply/Delete/DeleteAllOf separately from the
+// status subresource apply. Write instrumentation, not resourceVersion
+// inference, proves the spec/status separation. Apply payloads are
+// captured by identity at record time — the applying client may mutate
+// the payload object in place while delegating.
+type writeLog struct {
+	creates       []string
+	updates       []string
+	patches       []string
+	applies       []string
+	deletes       []string
+	deleteAllOfs  []string
+	statusApplies []string
+	appliedUIDs   []types.UID
 }
 
-func newFixture(t *testing.T, objs ...client.Object) *fixture {
+// reset clears the recorded writes between reconciliations.
+func (l *writeLog) reset() {
+	l.creates = nil
+	l.updates = nil
+	l.patches = nil
+	l.applies = nil
+	l.deletes = nil
+	l.deleteAllOfs = nil
+	l.statusApplies = nil
+	l.appliedUIDs = nil
+}
+
+// expectNoPrimaryWrites proves the device controller never touches the
+// primary endpoint.
+func (l *writeLog) expectNoPrimaryWrites(t *testing.T) {
 	t.Helper()
 	g := NewWithT(t)
+	g.Expect(l.creates).To(BeEmpty(), "the device controller never creates objects")
+	g.Expect(l.updates).To(BeEmpty(), "the device controller never writes the primary endpoint")
+	g.Expect(l.patches).To(BeEmpty(), "the device controller never patches the primary endpoint")
+	g.Expect(l.applies).To(BeEmpty(), "the device controller never server-side-applies the primary endpoint")
+	g.Expect(l.deletes).To(BeEmpty(), "the device controller never deletes objects")
+	g.Expect(l.deleteAllOfs).To(BeEmpty(), "the device controller never bulk-deletes objects")
+}
+
+// managerStub satisfies the framework builder's manager needs offline: the
+// fake cluster client, the fixture scheme, a recording event recorder, a
+// dummy REST config — the discovery and dynamic clients built from it are
+// never dialed in tests — plus the registration surface the real
+// controller-runtime builder consumes: controller options, a logger, a
+// cache and Runnable capture. A fresh stub is created per registration so
+// controller restarts never collide on names.
+type managerStub struct {
+	ctrlmanager.Manager
+
+	client           client.Client
+	scheme           *runtime.Scheme
+	recorder         ctrlrecorder.EventRecorder
+	config           *rest.Config
+	cache            cache.Cache
+	controllerOption ctrlconfig.Controller
+	logger           logr.Logger
+	addErr           error
+	runnables        []ctrlmanager.Runnable
+}
+
+func (m *managerStub) GetClient() client.Client { return m.client }
+
+func (m *managerStub) GetScheme() *runtime.Scheme { return m.scheme }
+
+func (m *managerStub) GetEventRecorder(string) ctrlrecorder.EventRecorder { return m.recorder }
+
+func (m *managerStub) GetConfig() *rest.Config { return m.config }
+
+func (m *managerStub) GetCache() cache.Cache { return m.cache }
+
+func (m *managerStub) GetControllerOptions() ctrlconfig.Controller { return m.controllerOption }
+
+func (m *managerStub) GetLogger() logr.Logger { return m.logger }
+
+func (m *managerStub) Add(r ctrlmanager.Runnable) error {
+	if m.addErr != nil {
+		return m.addErr
+	}
+	m.runnables = append(m.runnables, r)
+	return nil
+}
+
+// fixture wires a framework device controller against a fake cluster,
+// scripted sources and a fake clock. The reconciler is built through the
+// production ReconcilerFor/Build path for every reconciliation, so
+// controller restarts are exercised for free. An interceptor-wrapped
+// client is the controller's only view of the cluster: primary writes
+// and the status subresource apply are recorded separately, and scripted
+// read failures or apply-time races hook the same indirection. Tests
+// observe behavior through the objects in the fake cluster and read or
+// mutate them through the unwrapped inner client. The fixture holds no
+// testing.T or gomega state: helpers take t contextually and derive
+// their gomega assertions from it.
+type fixture struct {
+	inner    client.WithWatch
+	client   client.Client
+	writes   *writeLog
+	clock    *fakeClock
+	scheme   *runtime.Scheme
+	recorder *events.FakeRecorder
+	sources  []*fakeSource
+
+	// hooks are the interceptor indirection: unset hooks delegate to
+	// the wrapped client unchanged.
+	hooks fixtureHooks
+}
+
+// fixtureHooks holds optional scripted behaviors injected between the
+// controller and the fake cluster.
+type fixtureHooks struct {
+	// get fails or redirects one read.
+	get func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error
+	// subResourceApply runs before a subresource apply is delegated.
+	subResourceApply func(ctx context.Context, c client.Client, subResourceName string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error
+}
+
+// newFixture builds the fake cluster with the given objects and wires
+// the interceptor instrumentation around it.
+func newFixture(t *testing.T, objs ...client.Object) *fixture {
+	t.Helper()
 	scheme := testScheme(t)
 	inner := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -258,19 +290,69 @@ func newFixture(t *testing.T, objs ...client.Object) *fixture {
 		).
 		WithObjects(objs...).
 		Build()
-	return &fixture{
-		t:      t,
-		g:      g,
-		client: &trackingClient{Client: inner},
-		clock:  &fakeClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
-		scheme: scheme,
+
+	f := &fixture{
+		inner:    inner,
+		writes:   &writeLog{},
+		clock:    &fakeClock{now: fixtureStart},
+		scheme:   scheme,
+		recorder: &events.FakeRecorder{Events: make(chan string, 128)},
+	}
+	f.client = interceptor.NewClient(inner, interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			f.writes.creates = append(f.writes.creates, objectRef(obj))
+			return c.Create(ctx, obj, opts...)
+		},
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			f.writes.updates = append(f.writes.updates, objectRef(obj))
+			return c.Update(ctx, obj, opts...)
+		},
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			f.writes.patches = append(f.writes.patches, objectRef(obj))
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+		Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			f.writes.applies = append(f.writes.applies, applyRef(obj))
+			return c.Apply(ctx, obj, opts...)
+		},
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			f.writes.deletes = append(f.writes.deletes, objectRef(obj))
+			return c.Delete(ctx, obj, opts...)
+		},
+		DeleteAllOf: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteAllOfOption) error {
+			f.writes.deleteAllOfs = append(f.writes.deleteAllOfs, objectRef(obj))
+			return c.DeleteAllOf(ctx, obj, opts...)
+		},
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if f.hooks.get != nil {
+				return f.hooks.get(ctx, c, key, obj, opts...)
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+		SubResourceApply: func(ctx context.Context, c client.Client, subResourceName string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+			f.recordStatusApply(obj)
+			if f.hooks.subResourceApply != nil {
+				return f.hooks.subResourceApply(ctx, c, subResourceName, obj, opts...)
+			}
+			return c.SubResource(subResourceName).Apply(ctx, obj, opts...)
+		},
+	})
+	return f
+}
+
+// recordStatusApply records one status subresource apply together with
+// the outgoing payload's identity, captured before the applying client
+// can mutate the payload in place.
+func (f *fixture) recordStatusApply(obj runtime.ApplyConfiguration) {
+	f.writes.statusApplies = append(f.writes.statusApplies, applyRef(obj))
+	if payload, ok := obj.(client.Object); ok {
+		f.writes.appliedUIDs = append(f.writes.appliedUIDs, payload.GetUID())
 	}
 }
 
 // draSource returns the fixture's scripted DRA source, creating it on
 // first use.
 func (f *fixture) draSource() *fakeSource {
-	f.t.Helper()
 	for _, src := range f.sources {
 		if src.id == sourceIDDRA {
 			return src
@@ -281,10 +363,47 @@ func (f *fixture) draSource() *fakeSource {
 	return src
 }
 
-func (f *fixture) reconciler() *device.Reconciler {
-	return &device.Reconciler{
-		Client: f.client,
-		Scheme: f.scheme,
+// classicSource returns the fixture's scripted classic source, creating
+// it on first use.
+func (f *fixture) classicSource() *fakeSource {
+	for _, src := range f.sources {
+		if src.id == sourceIDClassic {
+			return src
+		}
+	}
+	src := &fakeSource{id: sourceIDClassic, plane: discovery.PlaneClassic, clock: f.clock}
+	f.sources = append(f.sources, src)
+	return src
+}
+
+// newManager builds a fresh registration-capable manager stub over the
+// fixture's shared state. The device controller keeps the manager's
+// global concurrency default (only the inventory singleton is
+// serialized per kind), so the stub's controller options carry nothing
+// discovery-specific. Name validation is skipped because the fixture
+// registers a fresh, never-started controller for every reconciliation
+// while controller-runtime's name registry is process-global and only
+// releases the names of controllers that actually started and stopped.
+func (f *fixture) newManager() *managerStub {
+	return &managerStub{
+		client:   f.client,
+		scheme:   f.scheme,
+		recorder: f.recorder,
+		config:   &rest.Config{Host: "https://127.0.0.1"},
+		cache:    &informertest.FakeInformers{Scheme: f.scheme},
+		controllerOption: ctrlconfig.Controller{
+			SkipNameValidation: new(true),
+		},
+		logger: logr.Discard(),
+	}
+}
+
+// controller builds the production controller over the fixture's
+// scripted sources. The factory honors the singleton's source enablement
+// exactly like the production factory: a nil arm or a nil Enabled
+// defaults to enabled.
+func (f *fixture) controller() *device.Controller {
+	return &device.Controller{
 		Sources: func(cfg infrastructurev1alpha1.DiscoverySources) (discovery.Sources, error) {
 			enabled := func(on *bool) bool { return on == nil || *on }
 			draOn := cfg.DRA == nil || enabled(cfg.DRA.Enabled)
@@ -308,6 +427,17 @@ func (f *fixture) reconciler() *device.Reconciler {
 	}
 }
 
+// reconciler builds the production framework reconciler through
+// ReconcilerFor/Build over a fresh manager stub.
+func (f *fixture) reconciler(t *testing.T) *fwreconciler.Reconciler {
+	t.Helper()
+	r, err := f.controller().NewReconciler(context.Background(), f.newManager())
+	if err != nil {
+		t.Fatalf("fixture: building device reconciler: %v", err)
+	}
+	return r
+}
+
 // request builds the reconcile request of one device.
 func request(name string) reconcile.Request {
 	return reconcile.Request{NamespacedName: types.NamespacedName{Name: name}}
@@ -315,19 +445,36 @@ func request(name string) reconcile.Request {
 
 // mustReconcile runs one observation and fails the test on transient
 // errors.
-func (f *fixture) mustReconcile(name string) ctrl.Result {
-	f.t.Helper()
-	result, err := f.reconciler().Reconcile(context.Background(), request(name))
-	f.g.ExpectWithOffset(1, err).NotTo(HaveOccurred())
+func (f *fixture) mustReconcile(t *testing.T, name string) ctrl.Result {
+	t.Helper()
+	result, err := f.reconciler(t).Reconcile(context.Background(), request(name))
+	NewWithT(t).ExpectWithOffset(1, err).NotTo(HaveOccurred())
 	return result
 }
 
-func (f *fixture) getDevice(name string) *infrastructurev1alpha1.HardwareDevice {
-	f.t.Helper()
+// getDevice reads one device through the unwrapped cluster client.
+func (f *fixture) getDevice(t *testing.T, name string) *infrastructurev1alpha1.HardwareDevice {
+	t.Helper()
 	found := &infrastructurev1alpha1.HardwareDevice{}
-	f.g.ExpectWithOffset(1, f.client.Get(context.Background(),
+	NewWithT(t).ExpectWithOffset(1, f.inner.Get(context.Background(),
 		client.ObjectKey{Name: name}, found)).To(Succeed())
 	return found
+}
+
+// updateDevice persists a device mutation through the unwrapped cluster
+// client, bypassing the controller's write instrumentation.
+func (f *fixture) updateDevice(t *testing.T, found *infrastructurev1alpha1.HardwareDevice) {
+	t.Helper()
+	NewWithT(t).ExpectWithOffset(1, f.inner.Update(context.Background(), found)).To(Succeed())
+}
+
+// deviceMissing asserts a device does not exist.
+func (f *fixture) deviceMissing(t *testing.T, name string) {
+	t.Helper()
+	err := f.inner.Get(context.Background(),
+		client.ObjectKey{Name: name}, &infrastructurev1alpha1.HardwareDevice{})
+	NewWithT(t).ExpectWithOffset(1, apierrors.IsNotFound(err)).To(BeTrue(),
+		"expected hardware device %q to be missing, got %v", name, err)
 }
 
 // observedCondition returns the Observed condition and asserts its
@@ -336,7 +483,7 @@ func observedCondition(
 	g *WithT,
 	found *infrastructurev1alpha1.HardwareDevice,
 ) fwapi.Condition {
-	cond := fwconditions.FindStatusCondition(found, device.ConditionTypeObserved)
+	cond := fwconditions.FindStatusCondition(found, conditionTypeObserved)
 	g.Expect(cond).NotTo(BeNil(), "the Observed condition must exist")
 	return *cond
 }
@@ -487,56 +634,15 @@ func expectedStatus(collectedAt time.Time, model string) infrastructurev1alpha1.
 	}
 }
 
-// assertStatusMatches compares a device status against the expected
-// document: the persisted facts are asserted as a JSON document through
-// jq, and collectedAt compares by instant because the fake client
-// re-materializes metav1.Time in the process time zone.
-func assertStatusMatches(
-	g *WithT,
-	found *infrastructurev1alpha1.HardwareDevice,
-	want infrastructurev1alpha1.HardwareDeviceStatus,
-) {
-	g.Expect(found).To(SatisfyAll(
-		jq.Match(fmt.Sprintf(`.status.observedGeneration == %d`, want.ObservedGeneration)),
-		jq.Match(fmt.Sprintf(`.status.allocationPlane == %q`, want.AllocationPlane)),
-		jq.Match(fmt.Sprintf(`.status.sourceRef == %q`, want.SourceRef)),
-		jq.Match(acceleratorExpr(want.Accelerator)),
-	))
-	if want.CollectedAt == nil {
-		g.Expect(found.Status.CollectedAt).To(BeNil())
-		return
-	}
-	g.Expect(found.Status.CollectedAt).NotTo(BeNil())
-	g.Expect(found.Status.CollectedAt.Time.Equal(want.CollectedAt.Time)).To(BeTrue(),
-		"collectedAt must match by instant")
+// objectRef renders a recorded object reference.
+func objectRef(obj client.Object) string {
+	return fmt.Sprintf("%T/%s", obj, obj.GetName())
 }
 
-// acceleratorExpr renders the jq comparison of the accelerator status
-// document: optional facts the source does not publish are absent from
-// the document (null), never zero or defaulted.
-func acceleratorExpr(want *infrastructurev1alpha1.AcceleratorDeviceStatus) string {
-	if want == nil {
-		return `.status.accelerator == null`
+// applyRef renders a recorded apply-configuration reference.
+func applyRef(obj runtime.ApplyConfiguration) string {
+	if named, ok := obj.(client.Object); ok {
+		return fmt.Sprintf("%T/%s", obj, named.GetName())
 	}
-	expr := fmt.Sprintf(`.status.accelerator.model == %q`, want.Model)
-	if want.Vendor != "" {
-		expr += fmt.Sprintf(` and .status.accelerator.vendor == %q`, want.Vendor)
-	} else {
-		expr += ` and .status.accelerator.vendor == null`
-	}
-	if want.Memory != nil {
-		expr += fmt.Sprintf(` and .status.accelerator.memory == %q`, want.Memory.String())
-	} else {
-		expr += ` and .status.accelerator.memory == null`
-	}
-	return expr
-}
-
-// deviceMissing asserts a device does not exist.
-func (f *fixture) deviceMissing(name string) {
-	f.t.Helper()
-	err := f.client.Get(context.Background(),
-		client.ObjectKey{Name: name}, &infrastructurev1alpha1.HardwareDevice{})
-	f.g.ExpectWithOffset(1, apierrors.IsNotFound(err)).To(BeTrue(),
-		"expected hardware device %q to be missing, got %v", name, err)
+	return fmt.Sprintf("%T", obj)
 }
