@@ -83,8 +83,9 @@ type Reconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	// Recorder emits lifecycle events on children and configuration
-	// issues on the singleton. Defaults to the manager recorder in
-	// SetupWithManager; nil disables event emission.
+	// issues on the singleton (events.k8s.io/v1 semantics; the action is
+	// the UpperCamelCase verb of what this controller did to the
+	// regarding object). Required.
 	Recorder recorder.EventRecorder
 	// Sources builds the ordered source registry for one singleton
 	// configuration. It is re-evaluated on every scan so configuration
@@ -140,7 +141,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if err := r.writeStatus(ctx, single, nil, nil, issues.issues); err != nil {
 			return ctrl.Result{}, err
 		}
-		r.eventf(single, corev1.EventTypeWarning, reasonInvalidConfiguration, "Reconciled",
+		r.Recorder.Eventf(single, nil, corev1.EventTypeWarning, reasonInvalidConfiguration, "Reconciled",
 			"invalid discovery configuration: %v", err)
 		return ctrl.Result{RequeueAfter: cfg.rescanPeriod}, nil
 	}
@@ -196,7 +197,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("inventory: source factory must not be nil")
 	}
 	if r.Recorder == nil {
-		r.Recorder = mgr.GetEventRecorder(ControllerName)
+		return fmt.Errorf("inventory: recorder must not be nil")
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(ControllerName).
@@ -231,14 +232,4 @@ func (r *Reconciler) now() time.Time {
 		return time.Now()
 	}
 	return r.Clock()
-}
-
-// eventf emits an event when a recorder is configured. The action is the
-// UpperCamelCase verb of what this controller did to the regarding
-// object (events.k8s.io/v1 semantics).
-func (r *Reconciler) eventf(obj runtime.Object, eventtype, reason, action, format string, args ...any) {
-	if r.Recorder == nil {
-		return
-	}
-	r.Recorder.Eventf(obj, nil, eventtype, reason, action, format, args...)
 }

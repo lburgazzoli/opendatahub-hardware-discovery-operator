@@ -398,7 +398,7 @@ func (r *Reconciler) prune(
 			return requeue, fmt.Errorf("inventory: pruning hardware device %q: %w", action.device.Name, err)
 		}
 		state.remove(action.device.Name)
-		r.eventf(action.device, corev1.EventTypeNormal, "DevicePruned", "Deleted",
+		r.Recorder.Eventf(action.device, nil, corev1.EventTypeNormal, "DevicePruned", "Deleted",
 			"deleted hardware device: %s", action.cause)
 	}
 
@@ -407,7 +407,7 @@ func (r *Reconciler) prune(
 		if err := r.Update(ctx, device); err != nil {
 			return requeue, fmt.Errorf("inventory: stamping node grace on hardware device %q: %w", device.Name, err)
 		}
-		r.eventf(device, corev1.EventTypeNormal, "NodeGraceStarted", "Retained",
+		r.Recorder.Eventf(device, nil, corev1.EventTypeNormal, "NodeGraceStarted", "Retained",
 			"hosting node is absent or was recreated; device is retained for %s", cfg.gracePeriod)
 	}
 

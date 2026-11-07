@@ -65,13 +65,13 @@ func (r *Reconciler) materialize(
 			issues.add(reasonNameCollision, priorityNameCollision,
 				"hardware device name %q is held by a foreign object; identity %q is skipped",
 				discovery.DeviceName(identity.ID), identity.ID)
-			r.eventf(single, corev1.EventTypeWarning, reasonNameCollision, "Skipped",
+			r.Recorder.Eventf(single, nil, corev1.EventTypeWarning, reasonNameCollision, "Skipped",
 				"derived hardware device name %q collides with a foreign object", discovery.DeviceName(identity.ID))
 		case resolution.deferred:
 			// The prior incarnation of this id still holds the
 			// deterministic name within its grace window; recreation
 			// happens once grace prunes the old object.
-			r.eventf(single, corev1.EventTypeNormal, "DeviceRecreationDeferred", "Deferred",
+			r.Recorder.Eventf(single, nil, corev1.EventTypeNormal, "DeviceRecreationDeferred", "Deferred",
 				"identity %q waits for the node grace of its prior incarnation", identity.ID)
 		default:
 			if err := r.createDevice(ctx, single, state, identity, resolution.name, cfg.class, taken); err != nil {
@@ -160,7 +160,7 @@ func (r *Reconciler) createDevice(
 	}
 	state.add(device)
 	taken[name] = identity.ID
-	r.eventf(device, corev1.EventTypeNormal, "DeviceCreated", "Created",
+	r.Recorder.Eventf(device, nil, corev1.EventTypeNormal, "DeviceCreated", "Created",
 		"created hardware device for identity %q on node %q", identity.ID, identity.NodeName)
 	return nil
 }
@@ -201,7 +201,7 @@ func (r *Reconciler) ensureDevice(
 	if err := r.Update(ctx, existing); err != nil {
 		return fmt.Errorf("inventory: updating hardware device %q: %w", existing.Name, err)
 	}
-	r.eventf(existing, corev1.EventTypeNormal, "DeviceUpdated", "Updated",
+	r.Recorder.Eventf(existing, nil, corev1.EventTypeNormal, "DeviceUpdated", "Updated",
 		"reconciled hardware device spec for identity %q", identity.ID)
 	return nil
 }
