@@ -160,7 +160,7 @@ func (c *Controller) NewReconciler(ctx context.Context, mgr ctrl.Manager) (*fwre
 		// nodePredicate; node selection and plane resolution are
 		// re-evaluated in reconcile logic, never at the cache.
 		Watches(&corev1.Node{},
-			fwreconciler.WithPredicates(nodePredicate()),
+			fwreconciler.WithPredicates(nodePredicate(mgr.GetScheme())),
 			fwreconciler.WithEventHandler(fwhandlers.ToNamed(SingletonName)),
 		)
 

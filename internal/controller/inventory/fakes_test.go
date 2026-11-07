@@ -332,7 +332,7 @@ func condition(g *WithT, single *infrastructurev1alpha1.HardwareDiscovery, condi
 }
 
 // testNode builds a Node with the given identity.
-func testNode(name, uid string, nodeLabels map[string]string) *corev1.Node {
+func testNode(name string, uid string, nodeLabels map[string]string) *corev1.Node {
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   name,
@@ -390,7 +390,7 @@ func seedDevice(
 }
 
 // draIdentity builds a DRA-plane identity with a UUID id.
-func draIdentity(nodeName, nodeUID, id, pool string) discovery.Identity {
+func draIdentity(nodeName string, nodeUID string, id string, pool string) discovery.Identity {
 	return discovery.Identity{
 		ID:       id,
 		Kind:     discovery.IdentityKindUUID,
@@ -402,7 +402,7 @@ func draIdentity(nodeName, nodeUID, id, pool string) discovery.Identity {
 }
 
 // classicIdentity builds a classic-plane identity with a nodeIndex id.
-func classicIdentity(nodeName, nodeUID string, index int32) discovery.Identity {
+func classicIdentity(nodeName string, nodeUID string, index int32) discovery.Identity {
 	return discovery.Identity{
 		ID:       fmt.Sprintf("%s-gpu-%d", nodeName, index),
 		Kind:     discovery.IdentityKindNodeIndex,
@@ -425,7 +425,7 @@ func unknownEnum(cause error) discovery.Enumeration {
 
 // gpuSlice builds a complete single-GPU node-local pool advertisement
 // with the whole-GPU attribute and capacity contract.
-func gpuSlice(name, nodeName, pool, uuid, model string) *resourcev1.ResourceSlice {
+func gpuSlice(name string, nodeName string, pool string, uuid string, model string) *resourcev1.ResourceSlice {
 	node := nodeName
 	return &resourcev1.ResourceSlice{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -451,7 +451,7 @@ func gpuSlice(name, nodeName, pool, uuid, model string) *resourcev1.ResourceSlic
 
 // incompleteSlicePool builds a two-slice pool with only one slice
 // present: an incomplete snapshot that must classify as Unknown.
-func incompleteSlicePool(name, nodeName, pool, uuid, model string) *resourcev1.ResourceSlice {
+func incompleteSlicePool(name string, nodeName string, pool string, uuid string, model string) *resourcev1.ResourceSlice {
 	slice := gpuSlice(name, nodeName, pool, uuid, model)
 	slice.Spec.Pool.ResourceSliceCount = 2
 	return slice
@@ -459,7 +459,7 @@ func incompleteSlicePool(name, nodeName, pool, uuid, model string) *resourcev1.R
 
 // draDeviceSpec is the expected spec of a DRA identity, computed
 // independently of the controller mapping.
-func draDeviceSpec(id, nodeName, nodeUID, pool string) infrastructurev1alpha1.HardwareDeviceSpec {
+func draDeviceSpec(id string, nodeName string, nodeUID string, pool string) infrastructurev1alpha1.HardwareDeviceSpec {
 	return infrastructurev1alpha1.HardwareDeviceSpec{
 		Class: classTest,
 		Identity: infrastructurev1alpha1.DeviceIdentity{
@@ -482,7 +482,7 @@ func draDeviceSpec(id, nodeName, nodeUID, pool string) infrastructurev1alpha1.Ha
 }
 
 // classicDeviceSpec is the expected spec of a classic identity.
-func classicDeviceSpec(nodeName, nodeUID string, index int32) infrastructurev1alpha1.HardwareDeviceSpec {
+func classicDeviceSpec(nodeName string, nodeUID string, index int32) infrastructurev1alpha1.HardwareDeviceSpec {
 	return infrastructurev1alpha1.HardwareDeviceSpec{
 		Class: classTest,
 		Identity: infrastructurev1alpha1.DeviceIdentity{

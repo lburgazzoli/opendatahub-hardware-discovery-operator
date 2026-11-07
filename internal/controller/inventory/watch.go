@@ -25,6 +25,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+
+	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 )
 
 // nodePredicate passes Node events that can change this controller's
@@ -34,11 +36,11 @@ import (
 // timestamp. Routine Node status churn — conditions, heartbeats — is
 // filtered so scans stay bounded. There is deliberately no single
 // generation predicate: Node updates do not bump a spec generation.
-func nodePredicate() predicate.Predicate {
+func nodePredicate(scheme *runtime.Scheme) predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldNode, oldOK := asNode(e.ObjectOld)
-			newNode, newOK := asNode(e.ObjectNew)
+			oldNode, oldOK := asNode(scheme, e.ObjectOld)
+			newNode, newOK := asNode(scheme, e.ObjectNew)
 			if !oldOK || !newOK {
 				return false
 			}
@@ -51,8 +53,10 @@ func nodePredicate() predicate.Predicate {
 // registered as unstructured — the framework client's cache
 // representation — so the common path decodes an unstructured object with
 // the core Node kind; a typed Node is accepted unchanged. Anything else,
-// or an undecodable object, is not a Node event for this controller.
-func asNode(obj client.Object) (*corev1.Node, bool) {
+// or an undecodable object, is not a Node event for this controller. The
+// manager's scheme drives the framework conversion helper, which also
+// re-checks that the scheme knows the core Node kind.
+func asNode(scheme *runtime.Scheme, obj client.Object) (*corev1.Node, bool) {
 	switch typed := obj.(type) {
 	case *corev1.Node:
 		return typed, true
@@ -62,7 +66,7 @@ func asNode(obj client.Object) (*corev1.Node, bool) {
 			return nil, false
 		}
 		node := &corev1.Node{}
-		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(typed.Object, node); err != nil {
+		if err := fwresources.ObjectFromUnstructured(scheme, typed, node); err != nil {
 			return nil, false
 		}
 		return node, true
@@ -73,7 +77,7 @@ func asNode(obj client.Object) (*corev1.Node, bool) {
 
 // nodeEvidenceChanged reports whether a Node update touches discovery
 // evidence or lifecycle.
-func nodeEvidenceChanged(oldNode, newNode *corev1.Node) bool {
+func nodeEvidenceChanged(oldNode *corev1.Node, newNode *corev1.Node) bool {
 	if !apiequality.Semantic.DeepEqual(oldNode.Labels, newNode.Labels) {
 		return true
 	}

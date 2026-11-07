@@ -719,6 +719,25 @@ classic).
 A successful list is authoritative; any error or incompleteness is unknown.
 The two are never conflated.
 
+**Pruning authority on an unclaimed node (task 017 correction).** A
+source's successful empty enumeration of a node proves its devices gone
+only under two conditions. First, no registered source claims the node
+(`ErrNoPlaneEvidence`): a selected source's Unknown outcome — an
+incomplete pool, a forbidden read — takes precedence over every
+empty-source exception, so loss of evidence never prunes. Second, an
+empty read must be disappearance proof for the source kind: the DRA
+claim rule (advertisements exist) is separate from its zero-proof (a
+successful read that finds none), so a zero-advertisement node's
+DRA-backed devices are pruned, while the classic claim rule (evidence +
+parseable `gpu.count`) makes an unclaimed classic node's empty
+enumeration — missing or malformed `gpu.count`, missing
+extended-resource evidence — loss of evidence, never a proven zero:
+classic devices are retained. A trustworthy classic zero (evidence plus
+a valid `gpu.count=0`) claims the node and prunes through the ordinary
+desired-set path instead. The exception never turns a never-claimed
+node into a zero-device claim: the node's selection stays Unknown and
+no identities are fabricated.
+
 ---
 
 ## 9. Classic labels source profile (production, amendment 3)

@@ -28,8 +28,11 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+
+	fwresources "github.com/opendatahub-io/odh-platform-utilities/framework/resources"
 )
 
 // baseNode builds a Node carrying classic-plane evidence.
@@ -54,11 +57,10 @@ func baseNode() *corev1.Node {
 // representation its watch delivers, carrying the given GVK.
 func unstructuredOf(t *testing.T, gvk schema.GroupVersionKind, obj runtime.Object) *unstructured.Unstructured {
 	t.Helper()
-	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	u, err := fwresources.ToUnstructured(obj)
 	if err != nil {
 		t.Fatalf("fixture: converting %T to unstructured: %v", obj, err)
 	}
-	u := &unstructured.Unstructured{Object: content}
 	u.SetGroupVersionKind(gvk)
 	return u
 }
@@ -70,13 +72,23 @@ func unstructuredNode(t *testing.T, node *corev1.Node) *unstructured.Unstructure
 	return unstructuredOf(t, schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Node"}, node)
 }
 
+// predicateScheme builds the minimal scheme the predicate's conversion
+// helper needs: the core Node kind. (The fixture scheme lives in the
+// external test package; this file exercises unexported functions.)
+func predicateScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	utilruntime.Must(corev1.AddToScheme(scheme))
+	return scheme
+}
+
 // TestNodePredicate proves the Node watch passes discovery evidence and
 // lifecycle changes while filtering routine status churn, so no relevant
 // Node change is dropped and no heartbeat triggers a scan. Every case is
 // exercised through both the typed and the unstructured watch
 // representation.
 func TestNodePredicate(t *testing.T) {
-	nodeFilter := nodePredicate()
+	nodeFilter := nodePredicate(predicateScheme(t))
 
 	cases := []struct {
 		name string
@@ -185,7 +197,7 @@ func TestNodePredicate(t *testing.T) {
 // including unstructured objects of a foreign kind.
 func TestNodePredicateNonNodeUpdates(t *testing.T) {
 	g := NewWithT(t)
-	nodeFilter := nodePredicate()
+	nodeFilter := nodePredicate(predicateScheme(t))
 
 	g.Expect(nodeFilter.Update(event.UpdateEvent{
 		ObjectOld: &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cm"}},
@@ -203,7 +215,7 @@ func TestNodePredicateNonNodeUpdates(t *testing.T) {
 // by default: a new node must be scanned and a deleted one re-evaluated.
 func TestNodePredicateLifecycleEvents(t *testing.T) {
 	g := NewWithT(t)
-	nodeFilter := nodePredicate()
+	nodeFilter := nodePredicate(predicateScheme(t))
 
 	g.Expect(nodeFilter.Create(event.CreateEvent{Object: baseNode()})).To(BeTrue())
 	g.Expect(nodeFilter.Delete(event.DeleteEvent{Object: baseNode()})).To(BeTrue())

@@ -18,6 +18,7 @@ package inventory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -36,6 +37,7 @@ import (
 
 	infrastructurev1alpha1 "github.com/lburgazzoli/opendatahub-hardware-discovery-operator/api/infrastructure/v1alpha1"
 	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery"
+	"github.com/lburgazzoli/opendatahub-hardware-discovery-operator/pkg/discovery/dra"
 )
 
 // scanner executes one inventory scan: it owns the singleton's device
@@ -107,7 +109,7 @@ func nodeSelector(spec *metav1.LabelSelector) (labels.Selector, error) {
 }
 
 // durationOr returns d when positive, otherwise the fallback.
-func durationOr(d, fallback time.Duration) time.Duration {
+func durationOr(d time.Duration, fallback time.Duration) time.Duration {
 	if d > 0 {
 		return d
 	}
@@ -408,13 +410,15 @@ func (s *scanner) prune(
 			res, isResult := resultByName[node.Name]
 			if !isResult || res.selection.Outcome != discovery.OutcomeSuccess {
 				// Unknown inventory: retain, and never annotate — the
-				// node is present. One exception: per-source
-				// authoritative emptiness. A device backed by a source
-				// whose own enumeration of this node succeeded with zero
-				// identities is authoritatively gone even when no source
-				// claims the node (a zero-advertisement node is unclaimed
-				// and folds to Unknown); a never-claimed node simply has
-				// no such devices to prune.
+				// node is present. One narrow exception, the no-claim
+				// zero-advertisement case: when no registered source
+				// claims the node, a source whose own successful read
+				// found zero of its devices proves those devices gone.
+				// A selected source's Unknown outcome takes precedence
+				// over this exception — loss of evidence never prunes —
+				// and an unclaimed node's empty slice is never
+				// disappearance proof for source kinds whose claim rule
+				// differs from their zero-proof (classic).
 				if isResult && sourceAuthoritativelyEmpty(res, device.Spec.Source.Kind) {
 					prunes = append(prunes, pruneAction{device, "authoritative disappearance"})
 				}
@@ -447,17 +451,33 @@ func (s *scanner) prune(
 	return requeue, nil
 }
 
-// sourceAuthoritativelyEmpty reports whether the given source's
-// enumeration of the node succeeded with zero identities. A successful
-// empty list is authoritative for the source's own plane, so devices it
-// previously backed on the node are gone — the distinction between a
-// zero-advertisement node (prune its source-backed devices) and an
-// unclaimed node with unknown inventory (retain everything). It never
+// sourceAuthoritativelyEmpty reports whether the device's backing source
+// proved its devices gone on a node no registered source claims. Beyond
+// the source's own successful empty enumeration of the node, two
+// conditions hold. First, no registered source claims the node
+// (ErrNoPlaneEvidence): a selected source's Unknown outcome — an
+// incomplete DRA pool, a forbidden read — takes precedence over every
+// empty-source exception, so loss of evidence never prunes. Second, a
+// successful empty read must be authoritative disappearance evidence for
+// the source kind: the DRA source's claim rule (advertisements exist) is
+// separate from its zero-proof (a successful read that finds none), so
+// its devices are pruned, while the classic source's empty enumeration
+// of a node it does not claim — missing or malformed gpu.count, missing
+// extended-resource evidence — is loss of evidence, never a proven zero,
+// so classic devices are retained. A trustworthy classic zero (evidence
+// plus a valid count of zero) claims the node and prunes through the
+// ordinary authoritative-disappearance path instead. The exception never
 // turns a never-claimed node into a zero-device claim: the node's
 // selection stays Unknown and no identities are fabricated.
 func sourceAuthoritativelyEmpty(res nodeResult, sourceKind string) bool {
+	if !errors.Is(res.selection.Err, discovery.ErrNoPlaneEvidence) {
+		return false
+	}
 	enum, ok := res.enumerated[sourceKind]
-	return ok && enum.Outcome == discovery.OutcomeSuccess && len(enum.Identities) == 0
+	if !ok || enum.Outcome != discovery.OutcomeSuccess || len(enum.Identities) != 0 {
+		return false
+	}
+	return sourceKind == dra.SourceID
 }
 
 // orphanDeadline parses the persisted grace start of a device. A missing
