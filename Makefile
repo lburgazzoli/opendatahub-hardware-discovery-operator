@@ -3,9 +3,9 @@ IMG ?= controller:latest
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
-# CONTAINER_TOOL defines the container tool to be used for building images.
-# The local development and Kind harness baseline is rootless podman; Docker
-# is an accepted override (CONTAINER_TOOL=docker).
+# CONTAINER_TOOL names the container engine for the image targets.
+# Podman is the only supported engine (including the Kind harness
+# behind make/e2e.mk); any other value fails before side effects.
 CONTAINER_TOOL ?= podman
 
 # Setting SHELL to bash allows bash commands to be executed by recipes.
@@ -91,6 +91,10 @@ lint-config: ## Verify golangci-lint linter configuration.
 test: manifests generate ## Run unit tests (race detector enabled; no cluster, no manager).
 	$(GO_CMD) test $(GO_TEST_FLAGS) ./...
 
+.PHONY: test-container-workflow
+test-container-workflow: ## Run the offline container workflow contract tests (no engine, no network).
+	hack/scripts/test-container-workflow.sh
+
 .PHONY: verify
 verify: manifests generate fmt vet lint test drift-check ## Run all cluster-free checks: generation, formatting, lint, tests and drift.
 
@@ -111,13 +115,22 @@ build: ## Build manager binary.
 run: manifests generate fmt vet ## Run the operator subcommand from your host.
 	$(GO_CMD) run ./cmd operator
 
+# Podman is the only supported engine: any other selector fails during
+# recipe expansion, before any engine, registry or cluster side effect.
+# Usage: $(call check-podman-only,$(CONTAINER_TOOL),image builds)
+define check-podman-only
+$(if $(filter-out podman,$(strip $(1))),$(error only podman is supported for $(2) (got '$(1)'); Docker is not supported))
+endef
+
 .PHONY: container-build
-container-build: ## Build the manager container image (podman by default, CONTAINER_TOOL=docker to override).
-	$(CONTAINER_TOOL) build $(if $(BASE_IMAGE),--build-arg BASE_IMAGE=$(BASE_IMAGE)) -t $(IMG) .
+container-build: ## Build the local linux/amd64+linux/arm64 manager image manifest (podman only; never publishes).
+	$(call check-podman-only,$(CONTAINER_TOOL),image builds)
+	hack/scripts/image.sh build-manifest $(IMG)$(if $(BASE_IMAGE), --base-image $(BASE_IMAGE))
 
 .PHONY: container-push
-container-push: ## Push the manager container image.
-	$(CONTAINER_TOOL) push $(IMG)
+container-push: ## Publish every member of the local two-platform manifest named by IMG (podman only).
+	$(call check-podman-only,$(CONTAINER_TOOL),image publishing)
+	hack/scripts/image.sh push-manifest $(IMG)
 
 .PHONY: build-installer
 build-installer: manifests generate ## Generate a consolidated YAML with CRDs and deployment.
