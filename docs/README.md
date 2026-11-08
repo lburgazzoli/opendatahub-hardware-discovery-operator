@@ -84,7 +84,12 @@ CRDs and RBAC — never the `cluster` singleton, which is
 publisher/orchestrator-owned input (see
 [`config/samples/`](../config/samples/)). CRDs are retained on uninstall.
 Kustomize sources under [`config/`](../config/) generate
-`dist/install.yaml`. [`packaging/module.yaml`](../packaging/module.yaml)
+`dist/install.yaml`. The controller image is built with Podman only,
+for both `linux/amd64` and `linux/arm64`, and published separately
+(`make container-build` / `make container-push`; e2e runs use fresh
+ephemeral ttl.sh references — see
+[`development.md`](development.md), Packaging).
+[`packaging/module.yaml`](../packaging/module.yaml)
 is ODH module metadata: integration into `opendatahub-io/opendatahub-operator`
 is the destination, not completed onboarding.
 
@@ -103,6 +108,7 @@ deliberately unfixed here — belongs to a chart/operator review).
 | `internal/controller/{inventory,device}/` | the two controllers |
 | `pkg/discovery/` | pure domain core; `classic/` and `dra/` source packages |
 | `config/` | Kustomize sources, RBAC, samples |
+| `hack/scripts/` | reviewed shell workflow: image build/publish, e2e orchestration, chart curation, their offline contract tests |
 | `dist/chart/` | reviewed, generated-then-curated Helm chart |
 | `packaging/module.yaml` | ODH module metadata |
 | `test/` | unit tests, e2e suite (`test/e2e/`), simulator and harness support |

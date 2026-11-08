@@ -40,14 +40,18 @@ cluster, kubeconfig or network.
 make demo
 ```
 
-Prerequisites: Linux/amd64, [podman](https://podman.io) 6.x (or docker),
-~4 GiB free RAM, and nothing else — the harness builds the controller
-image locally, creates a run-owned [Kind](https://kind.sigs.k8s.io)
-cluster per profile (`kindest/node:v1.34.11`), installs the Run:ai
-fake-gpu-operator simulator (test-only) and the service Helm chart, and
-never touches your ambient kubeconfig. Each profile takes ~2 minutes;
-evidence lands in `dist/e2e/`. `make test-e2e` additionally runs the
-harness verification test (four cluster lifecycles total).
+Prerequisites: Linux, [podman](https://podman.io) 6.x (the only supported
+container engine), ~4 GiB free RAM, and network access — the harness
+builds the controller image for both `linux/amd64` and `linux/arm64`,
+publishes it under a fresh anonymous [ttl.sh](https://ttl.sh) reference
+(unique per run, six-hour expiry, no secrets in the image), creates a
+run-owned [Kind](https://kind.sigs.k8s.io) cluster per profile
+(`kindest/node:v1.34.11`), and the cluster pulls the matching native
+child. It installs the Run:ai fake-gpu-operator simulator (test-only)
+and the service Helm chart, and never touches your ambient kubeconfig.
+Each profile takes ~2 minutes; evidence lands in `dist/e2e/`.
+`make test-e2e` additionally runs the harness verification test (four
+cluster lifecycles total).
 
 Cleanup is automatic: every cluster is run-owned and torn down by the
 harness (successful or not). If you instead install the chart by hand on

@@ -8,8 +8,9 @@ deliberately do not — is summarized at the end.
 | Unit | `make test` | nothing (no cluster, no kubeconfig; initial tool downloads may need network) | Controllers, codecs, identity, lifecycle and observation semantics — with the race detector |
 | Drift | `make verify` | nothing | Regeneration leaves the tracked tree byte-identical (does not regenerate the chart) |
 | e2e compile | `make test-e2e-compile` | nothing | The e2e-tagged suite builds and vets |
-| Demonstration | `make demo` | podman (or docker), ~4 GiB RAM | Both simulator profiles through the Helm chart on run-owned Kind clusters |
-| Full e2e gate | `make test-e2e` | same | The demonstration plus harness verification |
+| Container workflow | `make test-container-workflow` | nothing (no engine, no network) | The build/publish workflow contract: two-platform manifests, `BASE_IMAGE` forwarding, all-member push, override and non-Podman rejection, run-scoped ttl.sh reference grammar, fail-closed behavior |
+| Demonstration | `make demo` | podman 6.x, ~4 GiB RAM, network (ttl.sh publish and image pulls) | Both simulator profiles through the Helm chart on run-owned Kind clusters |
+| Full e2e gate | `make test-e2e` | same as the demonstration | The demonstration plus harness verification |
 
 ## Unit rules
 
@@ -51,14 +52,25 @@ RBAC and GC semantics are proven by the Kind e2e suite. Do not impose
 
 - The suite (tag `e2e`, `test/e2e/`) installs the reviewed Helm chart
   with its own ServiceAccount/RBAC plus the test-only fake-gpu-operator
-  simulator on separate run-owned classic/DRA Kind clusters; the
-  controller image is built locally and loaded as cargo. Simulator
-  source pins, frozen profiles and the fact-mutation protocol live in
-  `test/support/`.
+  simulator on separate run-owned classic/DRA Kind clusters. The service
+  controller image is built for both `linux/amd64` and `linux/arm64`
+  and published under a fresh run-scoped anonymous ttl.sh reference
+  (six-hour expiry); each cluster pulls the matching native child. The
+  pinned Kind node image is still loaded locally as harness cargo.
+  Simulator source pins, frozen profiles and the fact-mutation protocol
+  live in `test/support/`.
+- `make test-e2e` and `make demo` own their image reference: any
+  explicitly supplied `E2E_CONTROLLER_IMAGE*` value (environment or
+  command line) is rejected before side effects. Standalone
+  `make e2e-image` accepts such overrides for local, never-published
+  builds only. Direct tagged-suite invocations require explicit whole
+  separate `E2E_CONTROLLER_IMAGE_REPOSITORY`/`E2E_CONTROLLER_IMAGE_TAG`
+  values.
 - Private kubeconfigs under `/tmp`; the ambient kubeconfig is never
   touched. Bounded operations only: no ambient-cluster or prefix-wide
   deletion, no fake ResourceSlice CRD, no real GPU/DCGM/CUDA stack.
-  Missing prerequisites (runtime, image) are failures, never skips.
+  Missing prerequisites (runtime, network, published image) are
+  failures, never skips.
 - On failure, collect diagnostics (events, pod/node logs) for the exact
   run-owned cluster before tearing only that cluster down.
 

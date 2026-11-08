@@ -73,6 +73,31 @@ make build-installer IMG=...                # dist/install.yaml (never contacts 
   `make module-lint` are the remaining cluster-free packaging targets.
 - Controller image values stay whole (`controllerImage.repository` /
   `.tag`, never colon-split from a combined reference).
+- Container workflow (all of it Podman-only; any other engine selector
+  fails before side effects): the root `Containerfile` builds from the
+  UBI 10 Go Toolset (`latest`) builder onto the UBI 10 Minimal
+  (`latest`) runtime — a single static manager binary atop the UBI
+  filesystem, running as the numeric non-root user (65532) with a
+  read-only root filesystem under the chart's restricted security
+  context. `make container-build` and
+  `make e2e-image` build local manifests containing exactly
+  `linux/amd64` + `linux/arm64` from that Containerfile — the
+  native builder cross-compiles, no emulation — and never publish.
+  `BASE_IMAGE` overrides the builder parent only. `make container-push`
+  separately validates that the named manifest is complete (both
+  platforms, children present locally) and then publishes every member.
+  Ordinary build/test/verify targets never publish images or mutate
+  clusters; help and dry-runs stay side-effect-free.
+- `make test-e2e` and `make demo` own one fresh run-scoped reference per
+  run — `ttl.sh/hw-discovery-<uuidv4>:6h`, anonymous, six-hour expiry,
+  never reused — and carry that single identity through build, publish
+  and test. Explicitly supplied `E2E_CONTROLLER_IMAGE*` overrides are
+  rejected; image overrides are for standalone build-only `e2e-image`.
+  A ttl.sh outage or an expired reference is a deterministic failure,
+  not a fallback to local loading; `latest` parents and ephemeral
+  references carry no long-term reproducibility guarantee.
+- `make test-container-workflow` is the engine/network-free contract
+  suite for this workflow (argument-recording stubs, no registry).
 - Lifecycle targets (`helm-deploy` etc., in `make/helm.mk` with shell
   logic in `hack/scripts/`) are deliberately inconvenient: explicit
   `KUBECONFIG` and `HELM_KUBECONTEXT` always, `HELM_CHART_REVIEWED=yes`
