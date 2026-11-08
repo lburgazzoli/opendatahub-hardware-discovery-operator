@@ -75,7 +75,12 @@ lock_ref() {
 validate_manifest() {
 	local ref=$1
 	local json platforms digest
-	if ! json=$("$IMAGE_ENGINE" manifest inspect "$ref" 2>/dev/null); then
+	# Classify locally first: `manifest exists` fails for absent refs and
+	# native images without any registry contact, while `manifest
+	# inspect` alone falls back to the registry for exactly those inputs
+	# (breaking the reject-before-any-registry-contact contract).
+	if ! "$IMAGE_ENGINE" manifest exists "$ref" >/dev/null 2>&1 ||
+		! json=$("$IMAGE_ENGINE" manifest inspect "$ref" 2>/dev/null); then
 		die "$ref is not a local manifest list (absent or a native single-platform image); build it first with make container-build or make e2e-image"
 	fi
 	platforms=$(printf '%s' "$json" | jq -r '.manifests[] | "\(.platform.os)/\(.platform.architecture)"' | sort)
@@ -115,9 +120,11 @@ cmd_build() {
 	lock_ref "$ref"
 
 	# Invalidate a previously built list at this ref (the named list
-	# only). A native image occupying the ref is never deleted.
+	# only). A native image occupying the ref is never deleted. Both
+	# checks are local-only: `manifest exists` fails for native images
+	# without the registry fallback `manifest inspect` would perform.
 	if "$IMAGE_ENGINE" image exists "$ref" 2>/dev/null; then
-		if "$IMAGE_ENGINE" manifest inspect "$ref" >/dev/null 2>&1; then
+		if "$IMAGE_ENGINE" manifest exists "$ref" >/dev/null 2>&1; then
 			"$IMAGE_ENGINE" manifest rm "$ref" >/dev/null
 		else
 			die "a native single-platform image occupies $ref; refusing to overwrite it — remove it or choose another reference"

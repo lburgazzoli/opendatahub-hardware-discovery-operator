@@ -80,6 +80,18 @@ manifest)
 	sub=${1:-}
 	shift || true
 	case $sub in
+	exists)
+		# Local-only classification, mirroring podman semantics
+		# (verified against podman 6.1.3): 0 for a local manifest
+		# list, 125 for a native image at the ref, 1 for an absent
+		# ref — and never any registry contact.
+		if [[ -f $state/refs/$(hash_ref "${1:-}") ]]; then exit 0; fi
+		if [[ -f $state/native/$(hash_ref "${1:-}") ]]; then
+			echo "stub podman: ${1:-}: image is not a manifest list" >&2
+			exit 125
+		fi
+		exit 1
+		;;
 	inspect)
 		f=$state/refs/$(hash_ref "${1:-}")
 		[[ -f $f ]] || exit 1
@@ -172,9 +184,17 @@ begin_case() {
 }
 
 # with_stubs runs one command under the current case's stub environment.
-# Every stubbed make/script invocation must go through here.
+# Every stubbed make/script invocation must go through here. IMAGE_ENGINE
+# and GO_CMD are pinned to the stub executables explicitly: inherited
+# absolute selectors bypass a PATH stub, and the Makefile re-exports
+# GO_CMD from make's own environment, so PATH alone is not hermetic.
+# MAKEFLAGS and MAKEFILES are stripped: an outer make's command-line
+# assignments (for example `make GO_CMD=/usr/bin/go
+# test-container-workflow`) propagate to nested makes through MAKEFLAGS
+# as command-line variables and would beat these environment-level pins.
 with_stubs() {
-	env PATH="$STUBS:$PATH" XDG_RUNTIME_DIR="$CASE_DIR/run" \
+	env -u MAKEFLAGS -u MAKEFILES PATH="$STUBS:$PATH" XDG_RUNTIME_DIR="$CASE_DIR/run" \
+		IMAGE_ENGINE="$STUBS/podman" GO_CMD="$STUBS/go" \
 		STUB_LOG="$CASE_DIR/events.log" STUB_STATE="$CASE_DIR/state" "$@"
 }
 
@@ -370,13 +390,25 @@ for i in 1 2; do
 	d=$CASE_DIR/run$i
 	mkdir -p "$d/state"
 	: >"$d/events.log"
-	env PATH="$STUBS:$PATH" XDG_RUNTIME_DIR="$CASE_DIR/run" \
+	# The second run inherits hostile absolute selectors after the first
+	# has already forked with a clean environment: the explicit pins
+	# below must still route it to the stubs. This invocation mirrors
+	# with_stubs manually because the log and state paths are per run
+	# here rather than per case.
+	if [[ $i == 2 ]]; then
+		export IMAGE_ENGINE=/usr/bin/podman GO_CMD=/usr/bin/go
+	fi
+	env -u MAKEFLAGS -u MAKEFILES PATH="$STUBS:$PATH" XDG_RUNTIME_DIR="$CASE_DIR/run" \
+		IMAGE_ENGINE="$STUBS/podman" GO_CMD="$STUBS/go" \
 		STUB_LOG="$d/events.log" STUB_STATE="$d/state" \
 		make test-e2e >"$d/make.out" 2>&1 &
 	pids+=($!)
 done
+unset IMAGE_ENGINE GO_CMD
 if wait "${pids[0]}"; then ok 'first concurrent run succeeds'; else bad 'first concurrent run failed'; fi
 if wait "${pids[1]}"; then ok 'second concurrent run succeeds'; else bad 'second concurrent run failed'; fi
+check 'the hostile-selector run still used the stubs' \
+	'[[ $(grep -c "^PODMAN build " "$CASE_DIR/run2/events.log") -ge 1 && $(grep -c "^GO test " "$CASE_DIR/run2/events.log") -ge 1 ]]'
 # r1/r2 are consumed by the check snippets evaluated below
 # shellcheck disable=SC2034
 r1=$(grep -oE "ttl\.sh/hw-discovery-[0-9a-f-]{36}:6h" "$CASE_DIR/run1/events.log" | sort -u)
@@ -431,6 +463,30 @@ seed_manifest localhost/t15e:1 "linux/amd64 $D1" "linux/arm64 $D2"
 hide_child "$D2"
 expect_make_fail 'an unavailable child is rejected' container-push IMG=localhost/t15e:1
 expect_no_log 'no registry push happened for any invalid input' 'manifest push'
+
+begin_case 'invalid inputs are classified locally, without registry inspection'
+seed_native localhost/t16a:1
+expect_make_fail 'push rejects a native ref' container-push IMG=localhost/t16a:1
+expect_make_fail 'push rejects an absent ref' container-push IMG=localhost/t16c:1
+seed_native localhost/t16b:1
+expect_make_fail 'build refuses a native occupant' container-build IMG=localhost/t16b:1
+expect_log 'the local-only list check ran' 'manifest exists localhost/t16[abc]:1'
+expect_no_log 'no manifest inspect ran for the invalid inputs' 'manifest inspect'
+
+begin_case 'the offline suite is hermetic against inherited engine and go selectors'
+IMAGE_ENGINE=/usr/bin/podman GO_CMD=/usr/bin/go expect_make \
+	'make test-e2e still routes every step to the stubs' test-e2e
+unset IMAGE_ENGINE GO_CMD
+expect_log 'the stub engine handled the build' '^PODMAN build '
+expect_log 'the stub go handled the test invocation' '^GO test '
+
+begin_case 'the suite is hermetic against outer make command-line assignments'
+MAKEFLAGS='GO_CMD=/usr/bin/go IMAGE_ENGINE=/usr/bin/podman'
+export MAKEFLAGS
+expect_make 'make test-e2e still routes every step to the stubs' test-e2e
+unset MAKEFLAGS
+expect_log 'the stub engine handled the build' '^PODMAN build '
+expect_log 'the stub go handled the test invocation' '^GO test '
 
 begin_case 'help and dry runs are side-effect free'
 expect_make 'make help succeeds' help
