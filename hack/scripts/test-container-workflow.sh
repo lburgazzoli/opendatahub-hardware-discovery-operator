@@ -12,6 +12,10 @@
 #   - non-podman and outer e2e image override rejection before effects
 #   - exact env/ref propagation, UUIDv4 grammar, one ID per run,
 #     distinct concurrent-run IDs, fail-closed propagation
+#   - local-only classification of invalid inputs (no registry contact)
+#   - failed rebuilds invalidate any list state at the ref, including
+#     native-childless lists that `image exists` cannot see
+#   - alias reference spellings share one per-ref lock
 #   - side-effect-free help and dry runs
 #
 # shellcheck disable=SC2016
@@ -127,7 +131,12 @@ tag)
 image)
 	case ${1:-} in
 	exists)
-		[[ -f $state/refs/$(hash_ref "${2:-}") || -f $state/native/$(hash_ref "${2:-}") ]] && exit 0
+		# Faithful to podman 6.1.3: `image exists` resolves a
+		# manifest list through its native-platform child, so
+		# empty and foreign-only lists are invisible to it.
+		[[ -f $state/native/$(hash_ref "${2:-}") ]] && exit 0
+		f=$state/refs/$(hash_ref "${2:-}")
+		[[ -f $f ]] && grep -q '^linux/amd64 ' "$f" && exit 0
 		exit 1
 		;;
 	esac
@@ -487,6 +496,31 @@ expect_make 'make test-e2e still routes every step to the stubs' test-e2e
 unset MAKEFLAGS
 expect_log 'the stub engine handled the build' '^PODMAN build '
 expect_log 'the stub go handled the test invocation' '^GO test '
+
+begin_case 'a failed rebuild over a native-childless list still leaves the ref absent'
+seed_manifest localhost/t17:1 "linux/arm64 $D2"
+seed_manifest localhost/t17b:1
+STUB_BUILD_RC=1
+export STUB_BUILD_RC
+expect_make_fail 'the rebuild over the arm64-only list fails' container-build IMG=localhost/t17:1
+expect_make_fail 'the rebuild over the empty list fails' container-build IMG=localhost/t17b:1
+unset STUB_BUILD_RC
+expect_log 'the arm64-only list is invalidated even though image exists cannot see it' \
+	"^PODMAN manifest rm localhost/t17:1$"
+expect_log 'the empty list is invalidated even though image exists cannot see it' \
+	"^PODMAN manifest rm localhost/t17b:1$"
+check 'the failed rebuild leaves the arm64-only ref absent' \
+	'[[ ! -e $(ref_file localhost/t17:1) ]]'
+check 'the failed rebuild leaves the empty ref absent' \
+	'[[ ! -e $(ref_file localhost/t17b:1) ]]'
+
+begin_case 'alias spellings of one reference share a single lock file'
+expect_make 'the qualified spelling builds' container-build IMG=localhost/t18:1
+expect_make 'the unqualified alias builds' container-build IMG=t18:1
+expect_make 'the tagless qualified spelling builds' container-build IMG=localhost/t19
+expect_make 'the tagless unqualified alias builds' container-build IMG=t19
+check 'aliases hashed to one lock per distinct reference (two references here)' \
+	'[[ $(ls -1 "$CASE_DIR/run/hw-discovery-locks" | wc -l) == 2 ]]'
 
 begin_case 'help and dry runs are side-effect free'
 expect_make 'make help succeeds' help

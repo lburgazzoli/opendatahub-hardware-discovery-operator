@@ -58,10 +58,36 @@ new_uuid() {
 	printf '%s' "$u"
 }
 
+# Canonical storage name of a reference, mirroring Podman's store
+# normalization (verified against podman 6.1.3): an unqualified first
+# component names the localhost registry, and a tagless name means
+# :latest. Aliases such as x:1 and localhost/x:1, or localhost/x and
+# localhost/x:latest, are one stored reference and must not split the
+# per-ref lock below. Only the lock hashes this form; the engine
+# normalizes the names it is given itself.
+canonical_ref() {
+	local name=$1
+	local first=${name%%/*}
+	if [[ $first == "$name" || ($first != *.* && $first != *:* && $first != localhost) ]]; then
+		# A single-component name is unqualified whatever tag it
+		# carries (the colon is the tag separator, not a registry
+		# port); a multi-component name is unqualified unless its
+		# first component looks like a registry (dot, port or
+		# localhost).
+		name=localhost/$name
+	fi
+	local last=${name##*/}
+	if [[ $last != *:* ]]; then
+		name=$name:latest
+	fi
+	printf '%s' "$name"
+}
+
 # Serialize build/push access to one reference across worktrees sharing
 # Podman storage. Different references never share a lock file.
 lock_ref() {
-	local ref=$1
+	local ref
+	ref=$(canonical_ref "$1")
 	local lockdir=${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/hw-discovery-locks
 	local lockfile
 	mkdir -p "$lockdir"
@@ -120,15 +146,16 @@ cmd_build() {
 	lock_ref "$ref"
 
 	# Invalidate a previously built list at this ref (the named list
-	# only). A native image occupying the ref is never deleted. Both
-	# checks are local-only: `manifest exists` fails for native images
-	# without the registry fallback `manifest inspect` would perform.
-	if "$IMAGE_ENGINE" image exists "$ref" 2>/dev/null; then
-		if "$IMAGE_ENGINE" manifest exists "$ref" >/dev/null 2>&1; then
-			"$IMAGE_ENGINE" manifest rm "$ref" >/dev/null
-		else
-			die "a native single-platform image occupies $ref; refusing to overwrite it — remove it or choose another reference"
-		fi
+	# only, whatever member state it is in). A native image occupying
+	# the ref is never deleted. `manifest exists` is the gate: it sees
+	# every list state locally — including empty or native-childless
+	# lists that `image exists` misses, because `image exists` resolves
+	# a list through its native-platform child — and it never performs
+	# the registry fallback `manifest inspect` would.
+	if "$IMAGE_ENGINE" manifest exists "$ref" >/dev/null 2>&1; then
+		"$IMAGE_ENGINE" manifest rm "$ref" >/dev/null
+	elif "$IMAGE_ENGINE" image exists "$ref" 2>/dev/null; then
+		die "a native single-platform image occupies $ref; refusing to overwrite it — remove it or choose another reference"
 	fi
 
 	# Not declared local: the EXIT trap runs after errexit has unwound
